@@ -77,12 +77,15 @@ GAMBLE_MISS_P = 0.01  # chance a giant fails while every other candidate passes 
 
 
 PROBE_CPU = 0.45  # fork + importing sqlglot and every test module
+SYM_CPU = 5.0  # symbolic TPC-DS check (3.3 s) + sometimes a few queries run for real
+P_SYM_LISTED = 0.45  # how often the symbolic check still ends with the test listed
 
 
 P_EQUIV_FAIL = 0.05  # chance an is->== style rewrite breaks a test at all
 
 
-def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe=False, equiv=False):
+def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe=False, equiv=False,
+           sym=()):
     """Choose how to handle one commit. Returns mode, tests to run, tests to list."""
     gamble = GAMBLE if gamble is None else gamble
     out = {"mode": "EMPTY", "run": [], "listed": [], "cond": [], "run_cpu": 0.0, "gain": 0.0, "costs": ""}
@@ -116,22 +119,39 @@ def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe
     if equiv:
         # an is->== rewrite: guard with the cheap candidates, list the rest only if one fails
         p_any = P_EQUIV_FAIL
-        giants = [t for t in cand if t not in cheap_set]
+        giants = [t for t in cand if t not in cheap_set or t in set(sym)]
     rest = [t for t in cand if t not in set(giants)]
     if gamble and giants and rest:
         cost_g = run_cost(rest) + p_any * (pack(giants, dur)[0] / 1000 + exp_fail) + GAMBLE_MISS_P * 300
     gamble_set = giants
-    best = min(cost_a, cost_b, cost_h, cost_g)
+    # T: only the symbolic check(s) run; everything else is listed
+    cost_t = math.inf
+    sym_tests = [t for t in sym if t in set(cand)]
+    others = [t for t in cand if t not in set(sym_tests)]
+    if sym_tests:
+        # a symbolic check often still ends with the test listed: price that into run modes
+        sym_listed = P_SYM_LISTED * sum(dur[t] / 1000 + 2.0 for t in sym_tests)
+        cost_a += sym_listed
+        if not equiv:
+            cost_g += sym_listed
+        if any(t in cheap_set for t in sym_tests):
+            cost_h += sym_listed
+    if sym_tests:
+        cost_t = (run_cost(sym_tests) + pack(others, dur)[0] / 1000
+                  + P_SYM_LISTED * (cost_b - pack(others, dur)[0] / 1000))
+    best = min(cost_a, cost_b, cost_h, cost_g, cost_t)
     forced = os.environ.get("BR_MODE")
     if forced == "A":
         best = cost_a
     elif forced == "B":
         best = cost_b
-    out["costs"] = f"A={cost_a:.2f} B={cost_b:.2f} H={cost_h:.2f} G={cost_g:.2f}"
+    out["costs"] = f"A={cost_a:.2f} B={cost_b:.2f} H={cost_h:.2f} G={cost_g:.2f} T={cost_t:.2f}"
     if best == cost_b:
         out.update(mode="B", listed=list(cand))
     elif best == cost_a:
         out.update(mode="A", run=list(cand), run_cpu=run_cost(cand))
+    elif best == cost_t:
+        out.update(mode="H", run=sym_tests, listed=others, run_cpu=run_cost(sym_tests))
     elif best == cost_h:
         out.update(mode="H", run=cheap, listed=pricey, run_cpu=run_cost(cheap))
     else:
@@ -198,6 +218,7 @@ class Plan:
         self.job1 = None
         self.probe_modules: list[str] = []
         self.case_filter: dict = {}
+        self.sym: dict = {}
         self.cpu_override: dict = {}
 
 
@@ -288,6 +309,19 @@ def _main(answers_out, written: set) -> None:
                     }
     except Exception as error:
         log("no case map:", error)
+    tpcds_num = num_by_id.get("tests/test_executor.py::TestExecutor::test_execute_tpcds")
+    tpcds_ns: dict = {}
+    tpcds_fp = None
+    try:
+        import gzip
+        import pickle
+
+        with gzip.open(os.path.join(APP, "maps", "tpcds_ns.json.gz"), "rt") as f:
+            tpcds_ns = {p: set(v) for p, v in json.load(f)["ns"].items()}
+        with open(os.path.join(APP, "maps", "tpcds_fp.pkl"), "rb") as f:
+            tpcds_fp = pickle.load(f)
+    except Exception as error:
+        log("no tpcds symbolic data:", error)
 
     all_nums = [t["number"] for t in tests]
     bit_to_num: list = []
@@ -350,10 +384,24 @@ def _main(answers_out, written: set) -> None:
             plan.need_state = verdict.need_state
             plan.state_mask = verdict.state_mask
             plan.needs_probe = verdict.needs_probe and files is not None
+            # TPC-DS executor test, symbolic shortcut: it is a candidate only through lines it
+            # executes while parsing/optimizing/transpiling -> compare what those produce
+            if (idx is not None and tpcds_fp is not None and files is not None and tpcds_num in bit_to_num
+                    and (tpcds_num in cand
+                         or (verdict.state_mask >> bit_to_num.index(tpcds_num)) & 1)):
+                tp_bit = bit_to_num.index(tpcds_num)
+                opaque = ((verdict.other_mask & ~verdict.name_mask) >> tp_bit) & 1
+                stateful = ((verdict.name_mask | verdict.state_mask) >> tp_bit) & 1 or verdict.need_state
+                touches_ns = any(ln in tpcds_ns.get(hp, ()) for hp, hl in verdict.line_hits for ln in hl)
+                if not opaque and not touches_ns:
+                    plan.sym[tpcds_num] = {"state": bool(stateful)}
+                    plan.cpu_override[tpcds_num] = SYM_CPU + (1.0 if stateful else 0.0)
             # TPC-DS executor test: run only the queries whose execution touches the change
             if idx is not None and case_maps:
                 pos_of = {n: i for i, n in enumerate(bit_to_num) if n is not None}
                 for t in list(plan.cand):
+                    if t in plan.sym:
+                        continue
                     cm = case_maps.get(t)
                     if cm is None or t not in pos_of or (verdict.other_mask >> pos_of[t]) & 1:
                         continue
@@ -441,7 +489,7 @@ def _main(answers_out, written: set) -> None:
 
         plan_cpu = ChainMap(plan.cpu_override, cpu_cost) if plan.cpu_override else cpu_cost
         d = decide(plan.cand, plan.files is not None, plan.fixture_only, plan_cpu, dur, meta,
-                   probe=plan.needs_probe, equiv=plan.equiv)
+                   probe=plan.needs_probe, equiv=plan.equiv, sym=tuple(plan.sym))
         if plan.case_filter:
             log(f"{plan.commit}: case filter {[(t, len(v)) for t, v in plan.case_filter.items()]}")
         plan.mode, plan.run, plan.listed, plan.cond = d["mode"], d["run"], d["listed"], d["cond"]
@@ -462,6 +510,7 @@ def _main(answers_out, written: set) -> None:
             planned -= p.run_cpu + JOB_OVERHEAD
             p.case_filter = {}
             p.mode, p.listed, p.run, p.cond = "B", p.cand, [], []
+            p.sym = {}
             log(f"{p.commit}: demoted to B for the CPU budget")
 
     # ---- run
@@ -473,6 +522,18 @@ def _main(answers_out, written: set) -> None:
         heavy = any(p.needs_probe for p in runnable) or any(
             meta[t][0] in HEAVY_TEST_FILES for p in runnable for t in p.run)
         R.preimport(heavy=heavy)
+        if tpcds_fp is not None:
+            R.PRISTINE_TPCDS.update(tpcds_fp)
+            R.PRISTINE_TPCDS["ns_idents"] = frozenset(tpcds_fp.get("ns_idents", ()))
+        if any(isinstance(v, dict) and v.get("state") for p in runnable for v in p.sym.values()) \
+                and R.PRISTINE_STATE.get("state") is None:
+            try:
+                import pickle
+
+                with open(os.path.join(APP, "maps", "state.pkl"), "rb") as f:
+                    R.PRISTINE_STATE["state"] = pickle.load(f)
+            except Exception as error:
+                log("no pristine state:", error)
         jobs = []
         for p in runnable:
             items = [(t, *meta[t]) for t in sorted(p.run, key=lambda t: (meta[t][0], meta[t][1], t))]
@@ -481,8 +542,9 @@ def _main(answers_out, written: set) -> None:
             timeouts = {t: max(2.0, 4.0 * p.cpu_override.get(t, cpu_cost[t]) + 1.0) for t, *_ in items}
             probe = {"modules": p.probe_modules, "files": all_test_files} if p.needs_probe else None
             case_filter = {t: v for t, v in p.case_filter.items() if any(t == i[0] for i in items)}
+            sym_run = {t: v for t, v in p.sym.items() if any(t == i[0] for i in items)}
             p.job = R.Job(key=p.commit, files=p.files, tests=items, timeouts=timeouts, probe=probe,
-                          case_filter=case_filter or None)
+                          case_filter=case_filter or None, sym=sym_run or None)
             jobs.append(p.job)
         # biggest first so the two slots finish together
         jobs.sort(key=lambda j: -sum(cpu_cost[t[0]] for t in j.tests if not (j.case_filter and t[0] in j.case_filter)))

@@ -86,6 +86,23 @@ class Tree:
 # --------------------------------------------------------------------------- child
 
 PRISTINE_STATE: dict = {"state": None}  # loaded by the parent before forking
+PRISTINE_TPCDS: dict = {"fp": None, "unstable": ()}  # idem (br/tpcds.py)
+SYM_MAX_RUN = 10  # run at most this many changed TPC-DS queries; beyond that just list the test
+
+
+def _tpcds_infected():
+    """Indices of TPC-DS queries whose optimized AST / duckdb SQL differ from pristine,
+    or None if that cannot be determined."""
+    base = PRISTINE_TPCDS.get("fp")
+    if base is None:
+        return None
+    from br import tpcds
+
+    current = tpcds.fingerprints()
+    unstable = set(PRISTINE_TPCDS.get("unstable", ()))
+    if len(current) != len(base):
+        return None
+    return [i for i in range(len(base)) if i in unstable or current[i] != base[i]]
 
 
 def _label_keys(keys: list[str]) -> list:
@@ -152,7 +169,7 @@ def _rss(pid: int) -> int:
 
 
 def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dict | None = None,
-                case_filter: dict | None = None) -> None:
+                case_filter: dict | None = None, sym: dict | None = None) -> None:
     import importlib
     import unittest
     from unittest.suite import _ErrorHolder
@@ -244,6 +261,21 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
         def addUnexpectedSuccess(self, test):
             self.failed_now = True
 
+    local_state = {"keys": None}
+    want_state = bool(probe and probe.get("state")) or bool(sym and any(
+        isinstance(v, dict) and v.get("state") for v in sym.values()))
+    if want_state and probe is None and PRISTINE_STATE.get("state") is not None:
+        # needed by the symbolic check; must be taken before any test module is imported
+        try:
+            signal.setitimer(signal.ITIMER_PROF, 60.0)
+            importlib.import_module("sqlglot")
+            from br import state as _state
+
+            local_state["keys"] = _state.changed_keys(PRISTINE_STATE["state"], _state.snapshot())
+            signal.setitimer(signal.ITIMER_PROF, 0)
+        except BaseException as error:  # noqa: BLE001
+            signal.setitimer(signal.ITIMER_PROF, 0)
+            emit("note", f"state-error:{repr(error)[:100]}")
     if probe is not None:
         try:
             signal.setitimer(signal.ITIMER_PROF, 30.0)
@@ -255,14 +287,16 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
             emit("done")
             out.flush()
             os._exit(0)
-        if probe.get("state") and PRISTINE_STATE.get("state") is not None:
+        if want_state and PRISTINE_STATE.get("state") is not None:
             try:
                 signal.setitimer(signal.ITIMER_PROF, 60.0)
                 from br import state as _state
 
                 current = _state.snapshot()
                 keys = _state.changed_keys(PRISTINE_STATE["state"], current)
-                emit("state", _label_keys(keys)[:20000])
+                local_state["keys"] = keys
+                if probe.get("state"):
+                    emit("state", _label_keys(keys)[:20000])
                 signal.setitimer(signal.ITIMER_PROF, 0)
             except BaseException as error:  # noqa: BLE001
                 signal.setitimer(signal.ITIMER_PROF, 0)
@@ -303,6 +337,43 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
             cls = getattr(module, cls_name, None)
             suite = unittest.TestSuite()
             for method, num in tests:
+                if sym and num in sym:
+                    # symbolic check of the TPC-DS executor test (br/tpcds.py)
+                    infected = None
+                    try:
+                        signal.setitimer(signal.ITIMER_PROF, 90.0)
+                        cfg = sym[num] if isinstance(sym[num], dict) else {}
+                        blocked = False
+                        if cfg.get("state"):
+                            # class/module-level edit: fine only if nothing the test reads
+                            # outside its symbolic part changed
+                            keys = local_state["keys"]
+                            ns_idents = PRISTINE_TPCDS.get("ns_idents") or ()
+                            if keys is None:
+                                blocked = True
+                            else:
+                                for key in keys:
+                                    name = key.split(":", 1)[1].split("[", 1)[0].rsplit(".", 1)[-1]
+                                    if name in ns_idents:
+                                        blocked = True
+                                        emit("note", f"sym-blocked:{name}")
+                                        break
+                        infected = None if blocked else _tpcds_infected()
+                        signal.setitimer(signal.ITIMER_PROF, 0)
+                    except BaseException as error:  # noqa: BLE001
+                        signal.setitimer(signal.ITIMER_PROF, 0)
+                        emit("note", f"sym-error:{repr(error)[:120]}")
+                    emit("note", f"sym:{'?' if infected is None else len(infected)}")
+                    if infected is None or len(infected) > SYM_MAX_RUN:
+                        emit("start", num)
+                        emit("end", num, True, 0.0)  # cannot rule it out cheaply: list it
+                        continue
+                    if not infected:
+                        emit("start", num)
+                        emit("end", num, False, 0.0)  # nothing it computes changed
+                        continue
+                    case_filter = dict(case_filter or {})
+                    case_filter[num] = infected
                 try:
                     case = cls(method)
                 except Exception:
@@ -333,6 +404,7 @@ class Job:
     timeouts: dict  # num -> seconds
     probe: dict | None = None  # {"modules": [...], "files": [...]} imported before the tests
     case_filter: dict | None = None  # test number -> case indices to run
+    sym: dict | None = None  # test number -> True: decide by the symbolic TPC-DS check
     # results
     failed: set = field(default_factory=set)
     passed: set = field(default_factory=set)
@@ -395,7 +467,7 @@ class Executor:
             try:
                 os.close(rfd)
                 _child_main(tree.root, self._plan(tests), wfd, job.timeouts,
-                            job.probe if not job.probed else None, job.case_filter)
+                            job.probe if not job.probed else None, job.case_filter, job.sym)
             except BaseException:
                 pass
             os._exit(1)
@@ -474,6 +546,8 @@ class Executor:
                 job.note += f" modfail:{msg[1]}:{msg[2][:80]}"
             elif kind == "probed":
                 job.probed = True
+            elif kind == "note":
+                job.note += f" {msg[1]}"
             elif kind == "state":
                 job.state_keys = msg[1]
             elif kind == "statefail":

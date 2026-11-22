@@ -47,9 +47,14 @@ class Verdict:
     line_hits: list = field(default_factory=list)  # (path, lines) behind line-based masks
     other_mask: int = 0  # tests that are candidates for reasons other than executed lines
 
-    def add(self, mask: int, reason: str, path: str | None = None, lines=None) -> None:
+    name_mask: int = 0  # candidates because they read a changed attribute / global by name
+
+    def add(self, mask: int, reason: str, path: str | None = None, lines=None, named: bool = False) -> None:
         self.mask |= mask
-        if lines is None:
+        if named:
+            self.name_mask |= mask
+            self.other_mask |= mask
+        elif lines is None:
             self.other_mask |= mask
         elif mask:
             self.line_hits.append((path, list(lines)))
@@ -524,6 +529,13 @@ class Analyzer:
 
     def _classify(self, path, mod, is_test_file, side, line, lo, hi, start, end, node, chain,
                   scopes, old_scopes, o_before, v: Verdict) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            (isinstance(d, ast.Name) and d.id == "overload")
+            or (isinstance(d, ast.Attribute) and d.attr == "overload")
+            for d in node.decorator_list
+        ) and side == "old":
+            v.reasons.append(f"overload-stub:{path}:{line}")
+            return  # typing-only stub: the real implementation is a separate def
         func = _func_in_chain(chain)
         lam_only = (
             func is None and lo is not None
@@ -619,7 +631,7 @@ class Analyzer:
             self._class_level(path, mod, is_test_file, chain, names, probe, f"attr:{path}:{line}")
             users = probe.mask
             readers = self.ident_users(names)
-            v.add(users & readers, f"attr-read:{','.join(sorted(names))}")
+            v.add(users & readers, f"attr-read:{','.join(sorted(names))}", named=True)
             if is_test_file:
                 classes = [c for c in chain if isinstance(c, ast.ClassDef)]
                 v.add(self.tests_in_class(path, classes[0].name), f"testclass:{path}")
@@ -640,7 +652,7 @@ class Analyzer:
 
         # module level
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and names:
-            v.add(self.ident_users(names), f"names:{','.join(sorted(names))}")
+            v.add(self.ident_users(names), f"names:{','.join(sorted(names))}", named=True)
             if is_test_file:
                 v.add(self.tests_in_file(path), f"testmodule:{path}")
             elif path.startswith("sqlglot/"):

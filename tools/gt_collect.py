@@ -9,7 +9,7 @@ for t in tests:
 kinds = json.load(open(os.environ.get("BR_KINDS", "/tmp/br_mut/a/kinds.json")))
 os.makedirs(f"{out}/commits", exist_ok=True)
 answers = {}
-for f in glob.glob(f"{src_dirs}/[mv]*.json"):
+for f in glob.glob(f"{src_dirs}/[mvx]*.json"):
     cid = os.path.basename(f)[:-5]
     r = json.load(open(f))
     failing = {num[n] for n in r["failed"] if n in num}

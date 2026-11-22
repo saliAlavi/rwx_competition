@@ -3,3 +3,4 @@ __pycache__/
 output.jsonl
 maps/index.pkl
 maps/state.pkl
+maps/tpcds_fp.pkl
