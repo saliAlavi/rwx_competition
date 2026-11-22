@@ -277,7 +277,8 @@ def _main(answers_out, written: set) -> None:
         by_class.setdefault(f"{t['file']}::{cls}", []).append(t["number"])
 
     wall_limit = float(os.environ.get("BR_WALL_LIMIT", 180.0 if n_commits <= 45 else 270.0))
-    deadline = t_start + wall_limit - 30.0
+    deadline = t_start + wall_limit - 40.0  # no new job after this
+    hard_deadline = t_start + wall_limit - 15.0  # running jobs are killed and listed
 
     try:
         idx = I.load(os.path.join(APP, "maps", "index.pkl"), os.path.join(APP, "maps", "maps.json.gz"))
@@ -460,7 +461,7 @@ def _main(answers_out, written: set) -> None:
                                probe={"modules": p.probe_modules, "files": sorted(by_file), "state": True})
                 jobs1.append(p.job1)
             try:
-                R.Executor(slots=2, tmp=TMP).run(jobs1, deadline=deadline)
+                R.Executor(slots=2, tmp=TMP).run(jobs1, deadline=deadline, hard_deadline=hard_deadline)
             except Exception as error:
                 log(f"state phase failed: {error!r}")
         components = idx.extra.get("components", {})
@@ -550,7 +551,7 @@ def _main(answers_out, written: set) -> None:
         jobs.sort(key=lambda j: -sum(cpu_cost[t[0]] for t in j.tests if not (j.case_filter and t[0] in j.case_filter)))
         log(f"cpu after preimport: self={_cpu():.2f}s")
         try:
-            R.Executor(slots=2, tmp=TMP).run(jobs, deadline=deadline)
+            R.Executor(slots=2, tmp=TMP).run(jobs, deadline=deadline, hard_deadline=hard_deadline)
         except Exception as error:  # list what we could not finish running
             import traceback
 

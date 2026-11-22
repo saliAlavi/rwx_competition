@@ -475,7 +475,8 @@ class Executor:
         os.set_blocking(rfd, False)
         return _Active(job=job, pid=pid, rfd=rfd, remaining=list(tests))
 
-    def run(self, jobs: list[Job], deadline: float | None = None, hard_factor: float = 1.5) -> None:
+    def run(self, jobs: list[Job], deadline: float | None = None, hard_factor: float = 1.5,
+            hard_deadline: float | None = None) -> None:
         queue: deque = deque((job, list(job.tests)) for job in jobs if job.tests or job.probe)
         active: dict[int, _Active] = {}
         sel = selectors.DefaultSelector()
@@ -574,6 +575,8 @@ class Executor:
                 if deadline is not None and time.monotonic() > deadline:
                     job.failed.update(t[0] for t in tests)
                     job.aborted = True
+                    if job.probe and not job.probed:
+                        job.all_failed = True  # imports never checked: assume the worst
                     job.note += " deadline"
                     continue
                 slot = free.pop()
@@ -609,6 +612,21 @@ class Executor:
                     if line:
                         handle_line(a, json.loads(line))
             now = time.monotonic()
+            if hard_deadline is not None and now > hard_deadline:
+                # out of wall clock: stop everything and list whatever was not finished
+                for slot, a in list(active.items()):
+                    log(f"{a.job.key}: hard deadline, killed")
+                    a.job.note += " hard-deadline"
+                    if a.job.probe and not a.job.probed:
+                        a.job.all_failed = True
+                    finish(slot, a, "timeout")
+                for job, tests in queue:
+                    job.failed.update(t[0] for t in tests)
+                    job.aborted = True
+                    if job.probe and not job.probed:
+                        job.all_failed = True
+                queue.clear()
+                break
             for slot, a in list(active.items()):
                 if _rss(a.pid) > RSS_LIMIT_BYTES:
                     log(f"{a.job.key}: child over memory limit, killed")

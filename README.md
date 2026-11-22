@@ -39,29 +39,55 @@ added.
    * fixtures and other data: tests that opened the file (or listed its
      directory, for adds and removals).
 
-3. **Run or list.** For each commit, `br/select.py` prices three options and
-   takes the cheapest:
+3. **Run or list.** For each commit, `br/select.py` prices these options and takes the
+   cheapest:
    * **A**: run the candidates here and list only the ones that fail;
    * **B**: list every candidate without running anything;
-   * **H**: run the cheap candidates and list the rest unrun.
+   * **H**: run the candidates that are cheap to run and list the rest unrun;
+   * **G**: run every candidate except the two giants (`test_execute_tpcds`,
+     `test_max_nodes`) and list those only if another candidate fails.
 
-   Per-test CPU costs measured in this runner are in `maps/cpu.json`.
-   Running is billed as CPU. Listing is billed as the busiest worker after
-   packing, and the optimizer tests are about 10× cheaper to list than to run.
+   Per-test CPU costs measured in this runner are in `maps/cpu.json`. Running is billed
+   as CPU. Listing is billed as the busiest worker after packing, and the optimizer
+   tests are about 10x cheaper to list than to run. A commit whose only edits turn
+   `is None` into `== None` (or the same against an enum member) is guarded by its cheap
+   candidates only.
 
-4. **In-container runner** (`br/runner.py`). The parent pre-imports pandas,
-   duckdb and numpy, then forks one child per commit. The child imports sqlglot
-   from a symlink overlay of `/opt/sqlglot` in `/tmp`, where only patched files
-   are real, and runs the tests with plain `unittest`.
-   * The spawn process pools in sqlglot's tests are replaced by an in-process
-     pool with a pickle round trip (`br/syncpool.py`). BLAS and duckdb are held
-     to one thread.
-   * Failures follow the labels: failures, errors, failing subtests and timeouts
-     count. An import error fails the whole file; a `setUpClass` error fails the
-     whole class.
+4. **In-container runner** (`br/runner.py`). The parent pre-imports pandas, duckdb and
+   numpy, then forks one child per commit. The child imports sqlglot from a symlink
+   overlay of `/opt/sqlglot` in `/tmp`, where only patched files are real, and runs the
+   tests with plain `unittest`.
+   * The spawn process pools in sqlglot's tests are replaced by an in-process pool with a
+     pickle round trip (`br/syncpool.py`). BLAS and duckdb are held to one thread
+     (duckdb 2.0 otherwise starts 256 I/O threads per connection).
+   * Failures follow the labels: failures, errors, failing subtests and timeouts count.
+     An import error fails the whole file; a `setUpClass` error fails the whole class; a
+     test that never reports is counted as failed.
+   * **Import probe.** When an edit runs at import time (module or class bodies, `def`
+     headers, functions called while importing), the child first imports sqlglot, the
+     changed modules and every test module, and fails whatever no longer imports.
+   * **Symbolic check for `test_execute_tpcds`** (`br/tpcds.py`). The test costs 21 s to
+     list and 34 s to run. Per query it parses, optimizes, plans, executes and compares
+     with duckdb. When a patch only touches code the test runs while parsing, optimizing
+     or transpiling, its outcome can change only if some query's optimized AST or duckdb
+     SQL changes. Those are fingerprinted from the pinned commit at image build and
+     recomputed under the patch (3 s): no difference means the test passes, a few
+     differing queries are run for real, many means the test is listed.
+   * The run never leaves a commit unanswered: fork failures, memory overruns and the
+     wall-clock deadline all fall back to listing.
 
-5. **Packing.** The listed tests are packed with longest-processing-time first,
-   for every worker count from 1 to 8, minimising busiest worker + 2 s × workers.
+5. **Packing.** The listed tests are packed with longest-processing-time first, for every
+   worker count from 1 to 8, minimising busiest worker + 2 s x workers.
+
+## Validation
+
+`tools/mutants.py` generates patches like the sample's (operator and constant flips,
+class-attribute edits, fixture edits, comments, multi-file) plus other kinds (test-file
+edits, dropped statements, changed defaults, deleted/renamed/added files, syntax errors,
+removed imports, config edits). `tools/ground_truth.py` runs sqlglot's full suite with
+pytest on each, as the labels were made. On the 30 sample commits and 539 generated
+patches the selector misses no failing test. These patches are used only to check the
+selector; nothing looks answers up by patch.
 
 ## Layout
 
@@ -69,8 +95,8 @@ added.
 | --- | --- |
 | `Dockerfile` | Labeling base image, `requirements.lock`, sqlglot at the pinned commit (GitHub archive), byte-compiled. |
 | `main.py`, `br/` | The selector that runs in the scorer. |
-| `maps/` | Precomputed maps (built from the pinned commit only). |
-| `tools/` | Offline tooling: tracer, map builder, measurement, local evaluation. |
+| `maps/` | Precomputed maps (built from the pinned commit only). State and TPC-DS fingerprints are generated during the image build. |
+| `tools/` | Offline tooling: tracers, map builder, measurement, mutant generation, ground truth, local evaluation. |
 | `sample/`, `score.py`, `Makefile`, `SCORING.md` | The organisers' starter kit, for local scoring. |
 
 Local check: `make sample` (or `tools/run_sample.sh` with rootless podman).
