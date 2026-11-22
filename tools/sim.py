@@ -30,7 +30,7 @@ for cid in sorted(ans):
             new = P.apply(old.decode("utf-8", "surrogateescape") if old is not None else None, fp)
             new = new.encode("utf-8", "surrogateescape") if new is not None else None
             A.analyze(fp, old, new, v)
-        cand = sorted({bit_num[i] for i in S.bits(v.mask) if i in bit_num})
+        cand = sorted({bit_num[i] for i in S.bits(v.mask | v.state_mask) if i in bit_num})
     except Exception as e:
         print(cid, "ANALYSIS ERROR", e); cand = sorted(dur)
     F = set(ans[cid]["failing"])

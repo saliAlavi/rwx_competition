@@ -71,6 +71,7 @@ def pack(nums: list[int], dur: dict[int, int]) -> tuple[int, list[list[int]]]:
 
 
 GAMBLE = os.environ.get("BR_GAMBLE", "1") == "1"
+USE_STATE = os.environ.get("BR_STATE", "0") == "1"  # diff import-time state (opt-in)
 GIANT_MS = 5000
 GAMBLE_MISS_P = 0.01  # chance a giant fails while every other candidate passes (0 of 82 seen)
 
@@ -139,6 +140,36 @@ def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe
     return out
 
 
+def state_users(keys, idx, analyzer, components) -> int:
+    """Tests that can observe the changed import-time state: users of the class (or of the
+    dialects wiring it in) that executed code reading the attribute; for a changed entry of a
+    dict keyed by an expression class, the tests that built that expression."""
+    mask = 0
+    for key, label in keys:
+        mod, rest = key.split(":", 1)
+        base = rest.split("[", 1)[0]
+        if "." in base:
+            qual, attr = base.rsplit(".", 1)
+            ckey = f"{mod}:{qual}"
+            users = idx.class_users.get(ckey, 0)
+            for dialect_key in components.get(ckey, ()):
+                users |= idx.class_users.get(dialect_key, 0)
+            if not users:
+                users = analyzer.module_users(mod)
+            narrowed = 0
+            if label and label.startswith("type:"):
+                narrowed = idx.class_users.get(label[5:], 0)
+            if narrowed:
+                mask |= users & narrowed
+            else:
+                readers = idx.ident_users.get(attr, 0) | idx.pair_users.get(f"{qual.split('.')[-1]}.{attr}", 0)
+                mask |= (users & readers) if readers else users
+        else:
+            readers = idx.ident_users.get(base, 0)
+            mask |= readers if readers else analyzer.module_users(mod)
+    return mask
+
+
 def bits(mask: int):
     while mask:
         low = mask & -mask
@@ -162,6 +193,9 @@ class Plan:
         self.run_cpu = 0.0
         self.needs_probe = False
         self.equiv = False
+        self.need_state = False
+        self.state_mask = 0
+        self.job1 = None
         self.probe_modules: list[str] = []
         self.case_filter: dict = {}
         self.cpu_override: dict = {}
@@ -313,6 +347,8 @@ def _main(answers_out, written: set) -> None:
             plan.reasons = verdict.reasons
             plan.fixture_only = verdict.fixture_only
             plan.equiv = verdict.equiv and not verdict.nonequiv
+            plan.need_state = verdict.need_state
+            plan.state_mask = verdict.state_mask
             plan.needs_probe = verdict.needs_probe and files is not None
             # TPC-DS executor test: run only the queries whose execution touches the change
             if idx is not None and case_maps:
@@ -345,6 +381,54 @@ def _main(answers_out, written: set) -> None:
             plan.files = None
 
     import resource as _res
+
+    # ---- phase 1: import-time edits. Import the patched sqlglot, diff its state against the
+    # pristine fingerprints, and keep only the users of what actually changed.
+    state_plans = [p for p in plans if p.need_state]
+    if state_plans and idx is not None and not USE_STATE:
+        # cheaper on every set we measured: keep the conservative import-time candidates
+        for p in state_plans:
+            extra = {bit_to_num[i] for i in bits(p.state_mask) if bit_to_num[i] is not None}
+            p.cand = sorted(set(p.cand) | extra)
+        state_plans = []
+    if state_plans and idx is not None:
+        pristine = None
+        try:
+            import pickle
+
+            with open(os.path.join(APP, "maps", "state.pkl"), "rb") as f:
+                pristine = pickle.load(f)
+        except Exception as error:
+            log("no pristine state:", error)
+        runnable1 = [p for p in state_plans if p.files is not None and pristine is not None]
+        if runnable1:
+            from br import runner as R
+
+            R.preimport(heavy=True)
+            R.PRISTINE_STATE["state"] = pristine
+            jobs1 = []
+            for p in runnable1:
+                p.job1 = R.Job(key=p.commit, files=p.files, tests=[], timeouts={},
+                               probe={"modules": p.probe_modules, "files": sorted(by_file), "state": True})
+                jobs1.append(p.job1)
+            try:
+                R.Executor(slots=2, tmp=TMP).run(jobs1, deadline=deadline)
+            except Exception as error:
+                log(f"state phase failed: {error!r}")
+        components = idx.extra.get("components", {})
+        for p in state_plans:
+            keys = p.job1.state_keys if p.job1 is not None else None
+            if keys is None or (p.job1 is not None and p.job1.all_failed):
+                extra_mask = p.state_mask
+                log(f"{p.commit}: no state diff, fallback to {bin(extra_mask).count('1')} tests")
+            else:
+                extra_mask = state_users(keys, idx, analyzer, components)
+                log(f"{p.commit}: state diff {len(keys)} keys {[k for k, _ in keys[:4]]} -> "
+                    f"{bin(extra_mask).count('1')} tests (fallback was {bin(p.state_mask).count('1')})")
+            extra = {bit_to_num[i] for i in bits(extra_mask) if bit_to_num[i] is not None}
+            p.cand = sorted(set(p.cand) | extra)
+            if p.job1 is not None and p.job1.probed:
+                p.needs_probe = False  # already done
 
     def _cpu(who=_res.RUSAGE_SELF):
         u = _res.getrusage(who)
@@ -422,8 +506,9 @@ def _main(answers_out, written: set) -> None:
     total_ms = 0
     for p in plans:
         out: list[int] = list(p.listed) if p.mode in ("B", "H") else []
-        job = p.job
-        if job is not None:
+        for job in (p.job1, p.job):
+            if job is None:
+                continue
             failed = set(job.failed)
             for f in job.failed_files:
                 failed.update(by_file.get(f, ()))

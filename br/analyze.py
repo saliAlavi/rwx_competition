@@ -39,6 +39,8 @@ class Verdict:
     fixture_only: bool = True
     needs_probe: bool = False  # a real Python change: check that everything still imports
     equiv: bool = False  # some edits are is->== style rewrites
+    need_state: bool = False  # import-time edit: diff sqlglot's state at run time
+    state_mask: int = 0  # conservative candidates if the state diff cannot be made
     nonequiv: bool = False  # some edit is anything else (real code, fixture, ...)
     probe_modules: set = field(default_factory=set)
 
@@ -580,14 +582,18 @@ class Analyzer:
                 mask_a = 0
                 for ln in range(start, end + 1):
                     mask_a |= la.get(ln, 0)
-                v.add(mask_a, f"importtime-stmt:{path}:{line}")
+                v.need_state = True
+                v.state_mask |= mask_a
+                v.reasons.append(f"state?importtime-stmt:{path}:{line}")
                 v.add(self.lines_mask(path, body_lines), f"importtime-func:{path}:{func.name}")
             elif side == "new" and old_f is not None:
                 la = getattr(self.idx, "line_a", {}).get(path, {})
                 mask_a = 0
                 for ln in range(old_f.lineno, (old_f.end_lineno or old_f.lineno) + 1):
                     mask_a |= la.get(ln, 0)
-                v.add(mask_a, f"importtime-insert:{path}:{line}")
+                v.need_state = True
+                v.state_mask |= mask_a
+                v.reasons.append(f"state?importtime-insert:{path}:{line}")
             return
 
         # class body or module level, but maybe only inside a lambda's body
@@ -618,17 +624,30 @@ class Analyzer:
                 classes = [c for c in chain if isinstance(c, ast.ClassDef)]
                 v.add(self.tests_in_class(path, classes[0].name), f"testclass:{path}")
             return
-        if any(isinstance(c, ast.ClassDef) for c in chain) or isinstance(node, ast.ClassDef):
-            self._class_level(path, mod, is_test_file, chain + ((node,) if isinstance(node, ast.ClassDef) else ()),
-                              names, v, f"class:{path}:{line}")
+        if isinstance(node, ast.ClassDef):  # bases, decorators, keywords: behaviour of every instance
+            self._class_level(path, mod, is_test_file, chain + (node,), names, v, f"class:{path}:{line}")
+            return
+        if any(isinstance(c, ast.ClassDef) for c in chain):
+            sv = Verdict()
+            self._class_level(path, mod, is_test_file, chain, names, sv, f"class:{path}:{line}")
+            v.need_state = True
+            v.state_mask |= sv.mask
+            v.reasons.extend(f"state?{r}" for r in sv.reasons[:3])
+            if is_test_file:  # test classes are not in sqlglot's state: keep them direct
+                classes = [c for c in chain if isinstance(c, ast.ClassDef)]
+                v.add(self.tests_in_class(path, classes[0].name), f"testclass:{path}")
             return
 
         # module level
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and names:
             v.add(self.ident_users(names), f"names:{','.join(sorted(names))}")
-            v.add(self._derived_users(names), f"derived:{','.join(sorted(names))}")
             if is_test_file:
                 v.add(self.tests_in_file(path), f"testmodule:{path}")
+            elif path.startswith("sqlglot/"):
+                # whatever was derived from it at import shows up in the state diff
+                v.need_state = True
+                v.state_mask |= self.module_users(mod)
+                v.reasons.append(f"state?module-assign:{path}:{line}")
             return
         v.add(self.module_users(mod), f"module-stmt:{path}:{line}")
         if is_test_file:

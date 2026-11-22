@@ -85,6 +85,37 @@ class Tree:
 
 # --------------------------------------------------------------------------- child
 
+PRISTINE_STATE: dict = {"state": None}  # loaded by the parent before forking
+
+
+def _label_keys(keys: list[str]) -> list:
+    """For changed dict entries, find the live key object and describe it."""
+    from br import state as _state
+
+    out = []
+    want: dict = {}
+    for k in keys:
+        mod_name, rest = k.split(":", 1)
+        if rest.endswith("]") and "[" in rest and not rest.endswith("[]"):
+            attrpath, h = rest[:-1].split("[", 1)
+            want.setdefault((mod_name, attrpath), set()).add(h)
+        out.append([k, None])
+    labels = {}
+    for (mod_name, attrpath), hashes in want.items():
+        obj = sys.modules.get(mod_name)
+        try:
+            for part in attrpath.split("."):
+                obj = getattr(obj, part)
+            for key_obj in obj:
+                h = _state._h(_state.fp(key_obj))
+                if h in hashes:
+                    labels[f"{mod_name}:{attrpath}[{h}]"] = _state.fp(key_obj)[:200]
+        except Exception:
+            continue
+    for item in out:
+        item[1] = labels.get(item[0])
+    return out
+
 
 class _Timeout(BaseException):
     pass
@@ -224,6 +255,18 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
             emit("done")
             out.flush()
             os._exit(0)
+        if probe.get("state") and PRISTINE_STATE.get("state") is not None:
+            try:
+                signal.setitimer(signal.ITIMER_PROF, 60.0)
+                from br import state as _state
+
+                current = _state.snapshot()
+                keys = _state.changed_keys(PRISTINE_STATE["state"], current)
+                emit("state", _label_keys(keys)[:20000])
+                signal.setitimer(signal.ITIMER_PROF, 0)
+            except BaseException as error:  # noqa: BLE001
+                signal.setitimer(signal.ITIMER_PROF, 0)
+                emit("statefail", repr(error)[:200])
         for mod in probe.get("modules", ()):
             try:
                 signal.setitimer(signal.ITIMER_PROF, 30.0)
@@ -298,6 +341,7 @@ class Job:
     failed_modules: set = field(default_factory=set)
     all_failed: bool = False
     probed: bool = False
+    state_keys: list | None = None
     cpu: dict = field(default_factory=dict)
     aborted: bool = False
     note: str = ""
@@ -430,6 +474,10 @@ class Executor:
                 job.note += f" modfail:{msg[1]}:{msg[2][:80]}"
             elif kind == "probed":
                 job.probed = True
+            elif kind == "state":
+                job.state_keys = msg[1]
+            elif kind == "statefail":
+                job.note += f" statefail:{msg[1][:80]}"
             elif kind == "why":
                 job.note += f" why{msg[1]}:{msg[2][:150]}"
             elif kind == "done":
