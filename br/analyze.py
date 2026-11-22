@@ -62,6 +62,12 @@ class Verdict:
             self.reasons.append(reason)
 
 
+def _sql_fixture_text(data: bytes) -> str:
+    """What tests.helpers._filter_comments leaves of a fixture file."""
+    text = data.decode("utf-8", "surrogateescape")
+    return "\n".join(line for line in text.splitlines() if line and not line.startswith("--"))
+
+
 def module_name(path: str) -> str | None:
     if not path.endswith(".py"):
         return None
@@ -362,6 +368,12 @@ class Analyzer:
             v.fixture_only = False
             self._analyze_py(fp, old, new, v)
         else:
+            if path.endswith(".sql") and path.startswith("tests/fixtures/") and old is not None \
+                    and new is not None and _sql_fixture_text(old) == _sql_fixture_text(new):
+                # every .sql fixture is read through tests.helpers, which drops empty lines and
+                # lines starting with "--" before anything else looks at the text
+                v.reasons.append(f"fixture-comment-only:{path}")
+                return
             v.nonequiv = True
             v.add(self.idx.open_b.get(path, 0), f"open:{path}")
             # read while the test module was imported: every test of those files
@@ -404,6 +416,10 @@ class Analyzer:
             return
         try:
             new_tree = ast.parse(new)
+            if ast.dump(old_tree) == ast.dump(new_tree) and _CODING.findall(old[:200]) == _CODING.findall(new[:200]):
+                # formatting only (quotes, parentheses, line breaks): the same program
+                v.reasons.append(f"ast-identical:{path}")
+                return
         except SyntaxError:
             # the module no longer imports: everything that loads it breaks
             v.add(self.module_users(mod), f"syntax-error:{mod}")

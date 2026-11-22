@@ -475,7 +475,7 @@ class Executor:
         os.set_blocking(rfd, False)
         return _Active(job=job, pid=pid, rfd=rfd, remaining=list(tests))
 
-    def run(self, jobs: list[Job], deadline: float | None = None, hard_factor: float = 1.5,
+    def run(self, jobs: list[Job], deadline: float | None = None, hard_factor: float = 4.0,
             hard_deadline: float | None = None) -> None:
         queue: deque = deque((job, list(job.tests)) for job in jobs if job.tests or job.probe)
         active: dict[int, _Active] = {}
@@ -633,7 +633,9 @@ class Executor:
                     finish(slot, a, "memory")
                     continue
                 if a.current is not None:
-                    limit = a.job.timeouts.get(a.current, 10.0) * hard_factor + 2.0
+                    # wall-clock backstop for hangs the CPU-time limit cannot interrupt; generous,
+                    # because a busy machine stretches wall time without any CPU being used
+                    limit = a.job.timeouts.get(a.current, 10.0) * hard_factor + 20.0
                     if now - a.started_at > limit:
                         finish(slot, a, "timeout")
 

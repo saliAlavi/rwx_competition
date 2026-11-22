@@ -71,6 +71,9 @@ def pack(nums: list[int], dur: dict[int, int]) -> tuple[int, list[list[int]]]:
 
 
 GAMBLE = os.environ.get("BR_GAMBLE", "1") == "1"
+PARTIAL = os.environ.get("BR_PARTIAL", "0") == "1"  # ~0.5% on our sets: off
+PARTIAL_TOP = 10
+P_TEST_FAIL = float(os.environ.get("BR_P_TEST_FAIL", "0.25"))  # one verified candidate fails
 USE_STATE = os.environ.get("BR_STATE", "0") == "1"  # diff import-time state (opt-in)
 GIANT_MS = 5000
 GAMBLE_MISS_P = 0.01  # chance a giant fails while every other candidate passes (0 of 82 seen)
@@ -139,17 +142,49 @@ def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe
     if sym_tests:
         cost_t = (run_cost(sym_tests) + pack(others, dur)[0] / 1000
                   + P_SYM_LISTED * (cost_b - pack(others, dur)[0] / 1000))
-    best = min(cost_a, cost_b, cost_h, cost_g, cost_t)
+    # P: verify only the few tests whose removal shrinks the packed list most per CPU second
+    cost_p = math.inf
+    part_run: list = []
+    if PARTIAL and len(cand) > 1:
+        listed_now = list(cand)
+        cur = pack(listed_now, dur)[0] / 1000
+        spent = 0.0
+        tops = sorted(cand, key=lambda t: -dur[t])[:PARTIAL_TOP]
+        for _ in range(PARTIAL_TOP):
+            best_gain, best_t, best_new = 0.0, None, cur
+            for t in tops:
+                if t in part_run:
+                    continue
+                rest_l = [x for x in listed_now if x != t]
+                new_cost = pack(rest_l, dur)[0] / 1000
+                p_t = P_SYM_LISTED if t in sym else P_TEST_FAIL
+                gain = (1 - p_t) * (cur - new_cost) - cpu_cost[t] - FILE_OVERHEAD
+                if gain > best_gain:
+                    best_gain, best_t, best_new = gain, t, new_cost
+            if best_t is None:
+                break
+            part_run.append(best_t)
+            listed_now = [x for x in listed_now if x != best_t]
+            spent += cpu_cost[best_t] + FILE_OVERHEAD
+            cur = best_new + (P_SYM_LISTED if best_t in sym else P_TEST_FAIL) * (dur[best_t] / 1000) * 0.5
+        if part_run:
+            cost_p = spent + (0.0 if probe else JOB_OVERHEAD) + cur
+    best = min(cost_a, cost_b, cost_h, cost_g, cost_t, cost_p)
     forced = os.environ.get("BR_MODE")
     if forced == "A":
         best = cost_a
     elif forced == "B":
         best = cost_b
-    out["costs"] = f"A={cost_a:.2f} B={cost_b:.2f} H={cost_h:.2f} G={cost_g:.2f} T={cost_t:.2f}"
+    out["costs"] = (f"A={cost_a:.2f} B={cost_b:.2f} H={cost_h:.2f} G={cost_g:.2f} T={cost_t:.2f}"
+                    f" P={cost_p:.2f}")
     if best == cost_b:
         out.update(mode="B", listed=list(cand))
     elif best == cost_a:
         out.update(mode="A", run=list(cand), run_cpu=run_cost(cand))
+    elif best == cost_p:
+        run_set = set(part_run)
+        out.update(mode="H", run=part_run, listed=[t for t in cand if t not in run_set],
+                   run_cpu=run_cost(part_run))
     elif best == cost_t:
         out.update(mode="H", run=sym_tests, listed=others, run_cpu=run_cost(sym_tests))
     elif best == cost_h:
