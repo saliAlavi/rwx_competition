@@ -70,15 +70,18 @@ def pack(nums: list[int], dur: dict[int, int]) -> tuple[int, list[list[int]]]:
     return best  # type: ignore[return-value]
 
 
-GAMBLE = os.environ.get("BR_GAMBLE", "0") == "1"
-PRICEY_RECORDED = 1.0  # seconds: a test this slow to list is worth gambling on
-GAMBLE_MISS_P = 0.03  # chance a pricey candidate fails while every cheap candidate passes
+GAMBLE = os.environ.get("BR_GAMBLE", "1") == "1"
+GIANT_MS = 5000
+GAMBLE_MISS_P = 0.01  # chance a giant fails while every other candidate passes (0 of 82 seen)
 
 
 PROBE_CPU = 0.45  # fork + importing sqlglot and every test module
 
 
-def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe=False):
+P_EQUIV_FAIL = 0.05  # chance an is->== style rewrite breaks a test at all
+
+
+def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe=False, equiv=False):
     """Choose how to handle one commit. Returns mode, tests to run, tests to list."""
     gamble = GAMBLE if gamble is None else gamble
     out = {"mode": "EMPTY", "run": [], "listed": [], "cond": [], "run_cpu": 0.0, "gain": 0.0, "costs": ""}
@@ -105,11 +108,18 @@ def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe
     if cheap and pricey:
         cost_h = run_cost(cheap) + pack(pricey, dur)[0] / 1000 + 0.3 * exp_fail
     cost_g = math.inf
-    gamble_set = [t for t in cand if dur[t] >= PRICEY_RECORDED * 1000 or t not in cheap_set]
-    rest = [t for t in cand if t not in set(gamble_set)]
-    if gamble and gamble_set and rest:
-        cost_g = (run_cost(rest) + p_any * (pack(gamble_set, dur)[0] / 1000 + 0.5)
-                  + (1 - p_any) * GAMBLE_MISS_P * 300)
+    # Giants: slow to list *and* to run (test_execute_tpcds, test_max_nodes). On the sample
+    # and on 289 generated patches they never failed unless another candidate failed too, so
+    # run every other candidate and list the giants only if one of those fails.
+    giants = [t for t in cand if dur[t] >= GIANT_MS and cpu_cost[t] >= 0.8 * dur[t] / 1000]
+    if equiv:
+        # an is->== rewrite: guard with the cheap candidates, list the rest only if one fails
+        p_any = P_EQUIV_FAIL
+        giants = [t for t in cand if t not in cheap_set]
+    rest = [t for t in cand if t not in set(giants)]
+    if gamble and giants and rest:
+        cost_g = run_cost(rest) + p_any * (pack(giants, dur)[0] / 1000 + exp_fail) + GAMBLE_MISS_P * 300
+    gamble_set = giants
     best = min(cost_a, cost_b, cost_h, cost_g)
     forced = os.environ.get("BR_MODE")
     if forced == "A":
@@ -151,7 +161,10 @@ class Plan:
         self.gain = 0.0
         self.run_cpu = 0.0
         self.needs_probe = False
+        self.equiv = False
         self.probe_modules: list[str] = []
+        self.case_filter: dict = {}
+        self.cpu_override: dict = {}
 
 
 def main() -> None:
@@ -226,6 +239,21 @@ def _main(answers_out, written: set) -> None:
         log("no cpu map:", error)
     for t in tests:
         cpu_cost.setdefault(t["number"], t["seconds"] * 1.5 + 0.02)
+    case_maps = {}
+    try:
+        import gzip
+
+        with gzip.open(os.path.join(APP, "maps", "cases.json.gz"), "rt") as f:
+            for tid, cm in json.load(f).items():
+                if tid in num_by_id:
+                    case_maps[num_by_id[tid]] = {
+                        "base": {p: set(v) for p, v in cm["base"].items()},
+                        "cases": {p: {int(l): ks for l, ks in lm.items()} for p, lm in cm["cases"].items()},
+                        "cpu": cm["case_cpu"],
+                        "n": cm["n"],
+                    }
+    except Exception as error:
+        log("no case map:", error)
 
     all_nums = [t["number"] for t in tests]
     bit_to_num: list = []
@@ -284,7 +312,30 @@ def _main(answers_out, written: set) -> None:
             plan.files = files
             plan.reasons = verdict.reasons
             plan.fixture_only = verdict.fixture_only
+            plan.equiv = verdict.equiv and not verdict.nonequiv
             plan.needs_probe = verdict.needs_probe and files is not None
+            # TPC-DS executor test: run only the queries whose execution touches the change
+            if idx is not None and case_maps:
+                pos_of = {n: i for i, n in enumerate(bit_to_num) if n is not None}
+                for t in list(plan.cand):
+                    cm = case_maps.get(t)
+                    if cm is None or t not in pos_of or (verdict.other_mask >> pos_of[t]) & 1:
+                        continue
+                    sel, full = set(), False
+                    for hit_path, hit_lines in verdict.line_hits:
+                        base = cm["base"].get(hit_path, ())
+                        lines_map = cm["cases"].get(hit_path, {})
+                        for ln in hit_lines:
+                            if ln in base:
+                                full = True
+                                break
+                            sel.update(lines_map.get(ln, ()))
+                        if full:
+                            break
+                    if full or not sel or len(sel) >= cm["n"] * 0.9:
+                        continue
+                    plan.case_filter[t] = sorted(sel)
+                    plan.cpu_override[t] = 1.8 + sum(cm["cpu"][k] for k in sel)
             plan.probe_modules = sorted(verdict.probe_modules)
             if verdict.global_change:
                 plan.files = files  # still runnable, but it is a broad change
@@ -302,8 +353,13 @@ def _main(answers_out, written: set) -> None:
     log(f"cpu after analysis: self={_cpu():.2f}s")
     # ---- decide per commit
     for plan in plans:
-        d = decide(plan.cand, plan.files is not None, plan.fixture_only, cpu_cost, dur, meta,
-                   probe=plan.needs_probe)
+        from collections import ChainMap
+
+        plan_cpu = ChainMap(plan.cpu_override, cpu_cost) if plan.cpu_override else cpu_cost
+        d = decide(plan.cand, plan.files is not None, plan.fixture_only, plan_cpu, dur, meta,
+                   probe=plan.needs_probe, equiv=plan.equiv)
+        if plan.case_filter:
+            log(f"{plan.commit}: case filter {[(t, len(v)) for t, v in plan.case_filter.items()]}")
         plan.mode, plan.run, plan.listed, plan.cond = d["mode"], d["run"], d["listed"], d["cond"]
         plan.run_cpu, plan.gain = d["run_cpu"], d["gain"]
         if plan.cand:
@@ -320,6 +376,7 @@ def _main(answers_out, written: set) -> None:
             if planned <= budget:
                 break
             planned -= p.run_cpu + JOB_OVERHEAD
+            p.case_filter = {}
             p.mode, p.listed, p.run, p.cond = "B", p.cand, [], []
             log(f"{p.commit}: demoted to B for the CPU budget")
 
@@ -337,12 +394,14 @@ def _main(answers_out, written: set) -> None:
             items = [(t, *meta[t]) for t in sorted(p.run, key=lambda t: (meta[t][0], meta[t][1], t))]
             if p.mode not in ("A", "H", "G"):
                 items = []
-            timeouts = {t: max(2.0, 4.0 * cpu_cost[t] + 1.0) for t, *_ in items}
+            timeouts = {t: max(2.0, 4.0 * p.cpu_override.get(t, cpu_cost[t]) + 1.0) for t, *_ in items}
             probe = {"modules": p.probe_modules, "files": all_test_files} if p.needs_probe else None
-            p.job = R.Job(key=p.commit, files=p.files, tests=items, timeouts=timeouts, probe=probe)
+            case_filter = {t: v for t, v in p.case_filter.items() if any(t == i[0] for i in items)}
+            p.job = R.Job(key=p.commit, files=p.files, tests=items, timeouts=timeouts, probe=probe,
+                          case_filter=case_filter or None)
             jobs.append(p.job)
         # biggest first so the two slots finish together
-        jobs.sort(key=lambda j: -sum(cpu_cost[t[0]] for t in j.tests))
+        jobs.sort(key=lambda j: -sum(cpu_cost[t[0]] for t in j.tests if not (j.case_filter and t[0] in j.case_filter)))
         log(f"cpu after preimport: self={_cpu():.2f}s")
         try:
             R.Executor(slots=2, tmp=TMP).run(jobs, deadline=deadline)

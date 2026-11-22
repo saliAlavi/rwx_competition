@@ -155,6 +155,89 @@ def add_comment(rng, root):
     return {rel: "\n".join(lines)}
 
 
+def mutate_test_file(rng, root):
+    """Edit an assertion or literal inside a test method."""
+    files = []
+    for d, _, fs in os.walk(os.path.join(root, "tests")):
+        for f in fs:
+            if f.startswith("test_") and f.endswith(".py"):
+                files.append(os.path.relpath(os.path.join(d, f), root))
+    for _ in range(50):
+        rel = rng.choice(sorted(files))
+        text = open(os.path.join(root, rel), encoding="utf-8").read()
+        lines = text.split("\n")
+        idx = [i for i, l in enumerate(lines) if ("self.assert" in l or "validate_" in l) and '"' in l]
+        if not idx:
+            continue
+        i = rng.choice(idx)
+        line = lines[i]
+        q = [m.start() for m in re.finditer('"', line)]
+        if len(q) < 2:
+            continue
+        p = q[1]
+        new = line[:p] + rng.choice([" ", "X", "1"]) + line[p:]
+        lines[i] = new
+        new_text = "\n".join(lines)
+        try:
+            compile(new_text, rel, "exec")
+        except SyntaxError:
+            continue
+        return {rel: new_text}
+    return None
+
+
+def drop_function_body(rng, root):
+    """Replace a small function's body with `return None` or remove an early return."""
+    import ast
+    files = py_files(root)
+    for _ in range(100):
+        rel = rng.choice(files)
+        text = open(os.path.join(root, rel), encoding="utf-8").read()
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and len(n.body) >= 2
+                 and (n.end_lineno - n.lineno) < 25]
+        if not funcs:
+            continue
+        f = rng.choice(funcs)
+        lines = text.split("\n")
+        stmt = rng.choice(f.body[1:] if isinstance(f.body[0], ast.Expr) else f.body)
+        indent = re.match(r"\s*", lines[stmt.lineno - 1]).group()
+        new_lines = lines[: stmt.lineno - 1] + [indent + "pass"] + lines[stmt.end_lineno:]
+        new_text = "\n".join(new_lines)
+        try:
+            compile(new_text, rel, "exec")
+        except SyntaxError:
+            continue
+        return {rel: new_text}
+    return None
+
+
+def change_default_or_decorator(rng, root):
+    files = py_files(root)
+    for _ in range(200):
+        rel = rng.choice(files)
+        text = open(os.path.join(root, rel), encoding="utf-8").read()
+        lines = text.split("\n")
+        cands = [i for i, l in enumerate(lines) if re.match(r"\s*def .*=\s*(True|False|None|\d+)", l)]
+        if not cands:
+            continue
+        i = rng.choice(cands)
+        line = lines[i]
+        m = list(re.finditer(r"=\s*(True|False|None|\d+)", line))[0]
+        rep = {"True": "False", "False": "True", "None": "0"}.get(m.group(1), str(int(m.group(1)) + 1) if m.group(1).isdigit() else "None")
+        lines[i] = line[: m.start(1)] + rep + line[m.end(1):]
+        new_text = "\n".join(lines)
+        try:
+            compile(new_text, rel, "exec")
+        except SyntaxError:
+            continue
+        return {rel: new_text}
+    return None
+
+
 def diff(root, changes):
     out = []
     for rel, new in sorted(changes.items()):
@@ -177,8 +260,35 @@ def main():
     os.makedirs(os.path.join(out_dir, "commits"), exist_ok=True)
     kinds = {}
     made = 0
+    mode2 = len(sys.argv) > 5 and sys.argv[5] == "v2"
     while made < count:
         r = rng.random()
+        if mode2:
+            k = rng.random()
+            if k < 0.25:
+                kind, ch = "testfile", mutate_test_file(rng, root)
+            elif k < 0.5:
+                kind, ch = "dropstmt", drop_function_body(rng, root)
+            elif k < 0.7:
+                kind, ch = "default", change_default_or_decorator(rng, root)
+            elif k < 0.85:
+                kind, ch = "code", mutate_code(rng, root)
+            else:
+                kind, ch = "multi", {}
+                for _ in range(2):
+                    part = rng.choice([mutate_code, drop_function_body, mutate_test_file, mutate_fixture])(rng, root)
+                    if part:
+                        for kk, vv in part.items():
+                            ch.setdefault(kk, vv)
+                if len(ch) < 2:
+                    ch = None
+            if not ch:
+                continue
+            cid = f"v{seed:02d}{made:04d}"
+            open(os.path.join(out_dir, "commits", f"{cid}.patch"), "w").write(diff(root, ch))
+            kinds[cid] = kind
+            made += 1
+            continue
         if r < 0.55:
             kind, ch = "code", mutate_code(rng, root)
         elif r < 0.75:

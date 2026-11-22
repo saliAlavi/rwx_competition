@@ -94,6 +94,20 @@ class ForkFailed(Exception):
     pass
 
 
+# Case filter for the executor's TPC-DS test: only the selected queries run, the others
+# return None, which is how the test itself skips queries it does not execute. Defined at
+# module level so the in-process pool can pickle it by reference.
+_CASES = {"sel": None, "k": 0, "orig": None}
+
+
+def _filtered_mp_execute(expression, meta):
+    k = _CASES["k"]
+    _CASES["k"] += 1
+    if _CASES["sel"] is not None and k not in _CASES["sel"]:
+        return None
+    return _CASES["orig"](expression, meta)
+
+
 RSS_LIMIT_BYTES = int(float(os.environ.get("BR_RSS_LIMIT_GB", "1.4")) * (1 << 30))
 _PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
@@ -106,7 +120,8 @@ def _rss(pid: int) -> int:
         return 0
 
 
-def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dict | None = None) -> None:
+def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dict | None = None,
+                case_filter: dict | None = None) -> None:
     import importlib
     import unittest
     from unittest.suite import _ErrorHolder
@@ -128,6 +143,7 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
         raise _Timeout("br per-test timeout")
 
     signal.signal(signal.SIGPROF, on_alarm)
+    current = {"file": None, "cls_key": None}
 
     class Result(unittest.TestResult):
         def __init__(self):
@@ -141,12 +157,23 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
             num = getattr(test, "_br_num", None)
             limit = timeouts.get(num, 10.0)
             emit("start", num)
+            self._case_mod = None
+            if case_filter and num in case_filter:
+                mod = sys.modules.get(test.__class__.__module__)
+                if mod is not None and hasattr(mod, "mp_execute"):
+                    _CASES.update(sel=set(case_filter[num]), k=0, orig=mod.mp_execute)
+                    mod.mp_execute = _filtered_mp_execute
+                    self._case_mod = mod
             self.t0 = time.process_time()
             signal.setitimer(signal.ITIMER_PROF, limit)
 
         def stopTest(self, test):
             signal.setitimer(signal.ITIMER_PROF, 0)
             num = getattr(test, "_br_num", None)
+            if getattr(self, "_case_mod", None) is not None:
+                self._case_mod.mp_execute = _CASES["orig"]
+                _CASES.update(sel=None, k=0, orig=None)
+                self._case_mod = None
             if syncpool.BROKEN["flag"]:
                 syncpool.BROKEN["flag"] = False
                 emit("clsfail", f"{test.__class__.__module__.replace('.', '/')}.py::{test.__class__.__name__}",
@@ -156,7 +183,13 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
 
         def _holder(self, test, err):
             if isinstance(test, _ErrorHolder):
-                emit("holder", test.description, repr(err[1])[:200])
+                # setUpClass / setUpModule (or their teardown) failed: every test of the
+                # class (or file) fails, including ones we were not asked to run
+                desc = test.description
+                if "Module" in desc.split(" ")[0]:
+                    emit("impfail", current["file"], f"module fixture: {repr(err[1])[:200]}")
+                else:
+                    emit("clsfail", current["cls_key"], f"{desc[:80]}: {repr(err[1])[:200]}")
                 return True
             return False
 
@@ -223,6 +256,7 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
         for cls_name, method, num in items:
             by_class.setdefault(cls_name, []).append((method, num))
         for cls_name, tests in by_class.items():
+            current.update(file=file, cls_key=f"{file}::{cls_name}")
             cls = getattr(module, cls_name, None)
             suite = unittest.TestSuite()
             for method, num in tests:
@@ -239,9 +273,7 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dic
                 suite.run(result)
             except _Timeout:
                 emit("clsfail", f"{file}::{cls_name}", "timeout outside a test")
-            for holder, _ in result.errors:
-                if isinstance(holder, _ErrorHolder):
-                    emit("clsfail", f"{file}::{cls_name}", holder.description[:200])
+            pass
     emit("done")
     out.flush()
     os._exit(0)
@@ -257,6 +289,7 @@ class Job:
     tests: list  # [(num, file, cls, method)]
     timeouts: dict  # num -> seconds
     probe: dict | None = None  # {"modules": [...], "files": [...]} imported before the tests
+    case_filter: dict | None = None  # test number -> case indices to run
     # results
     failed: set = field(default_factory=set)
     passed: set = field(default_factory=set)
@@ -318,7 +351,7 @@ class Executor:
             try:
                 os.close(rfd)
                 _child_main(tree.root, self._plan(tests), wfd, job.timeouts,
-                            job.probe if not job.probed else None)
+                            job.probe if not job.probed else None, job.case_filter)
             except BaseException:
                 pass
             os._exit(1)
@@ -400,6 +433,11 @@ class Executor:
             elif kind == "why":
                 job.note += f" why{msg[1]}:{msg[2][:150]}"
             elif kind == "done":
+                # never started or never finished (e.g. its setUpClass failed): count as failed
+                for t in a.remaining:
+                    job.failed.add(t[0])
+                if a.remaining:
+                    job.note += f" unreported:{len(a.remaining)}"
                 a.remaining = []
 
         last_pidlog = 0.0

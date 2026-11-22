@@ -34,7 +34,7 @@ for cid in sorted(ans):
     except Exception as e:
         print(cid, "ANALYSIS ERROR", e); cand = sorted(dur)
     F = set(ans[cid]["failing"])
-    d = S.decide(cand, True, v.fixture_only, cpu_cost, dur, meta, gamble=gamble, probe=v.needs_probe)
+    d = S.decide(cand, True, v.fixture_only, cpu_cost, dur, meta, gamble=gamble, probe=v.needs_probe, equiv=v.equiv and not v.nonequiv)
     miss_c = bool(F - set(cand))
     run = set(d["run"]); F_run = F & run
     out = F_run | set(d["listed"]) | (set(d["cond"]) if F_run else set())

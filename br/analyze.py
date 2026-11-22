@@ -38,10 +38,19 @@ class Verdict:
     global_change: bool = False
     fixture_only: bool = True
     needs_probe: bool = False  # a real Python change: check that everything still imports
+    equiv: bool = False  # some edits are is->== style rewrites
+    nonequiv: bool = False  # some edit is anything else (real code, fixture, ...)
     probe_modules: set = field(default_factory=set)
 
-    def add(self, mask: int, reason: str) -> None:
+    line_hits: list = field(default_factory=list)  # (path, lines) behind line-based masks
+    other_mask: int = 0  # tests that are candidates for reasons other than executed lines
+
+    def add(self, mask: int, reason: str, path: str | None = None, lines=None) -> None:
         self.mask |= mask
+        if lines is None:
+            self.other_mask |= mask
+        elif mask:
+            self.line_hits.append((path, list(lines)))
         if mask:
             self.reasons.append(reason)
 
@@ -68,6 +77,55 @@ def _tokens(src: str):
 
 
 _CODING = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
+
+
+_EQUIV_RHS = re.compile(r"\s*(None\b|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.[A-Z][A-Z0-9_]*\b(?!\s*[.(\[]))")
+
+
+def _code_cols(line: str) -> set[int]:
+    """Columns of `is` NAME tokens in a single line (not inside strings or comments)."""
+    cols = set()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(line + "\n").readline):
+            if tok.type == tokenize.NAME and tok.string == "is":
+                cols.add(tok.start[1])
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        pass
+    return cols
+
+
+def equivalent_rewrite(fp) -> bool:
+    """Every edited line only turns `is` into `==` (or `is not` into `!=`) against None or an
+    UPPERCASE enum member (NormalizationStrategy.UPPERCASE, TokenType.STRING). No sqlglot
+    __eq__ treats those specially, so the code behaves the same."""
+    any_change = False
+    for hunk in fp.hunks:
+        removed, added = [], []
+        for line in hunk.lines + [" "]:
+            tag = line[:1]
+            if tag == "-":
+                removed.append(line[1:])
+            elif tag == "+":
+                added.append(line[1:])
+            elif tag in (" ", "\\"):
+                if removed or added:
+                    if len(removed) != len(added):
+                        return False
+                    for o, n in zip(removed, added):
+                        if o == n:
+                            continue
+                        ok = False
+                        for col in _code_cols(o):
+                            for src, dst in ((" is not ", " != "), (" is ", " == ")):
+                                at = col - 1
+                                if o[at:at + len(src)] == src and o[:at] + dst + o[at + len(src):] == n:
+                                    if _EQUIV_RHS.match(o, at + len(src) - 1):
+                                        ok = True
+                        if not ok:
+                            return False
+                        any_change = True
+                    removed, added = [], []
+    return any_change
 
 
 def comment_only(old: str, new: str) -> bool:
@@ -297,6 +355,7 @@ class Analyzer:
             v.fixture_only = False
             self._analyze_py(fp, old, new, v)
         else:
+            v.nonequiv = True
             v.add(self.idx.open_b.get(path, 0), f"open:{path}")
             # read while the test module was imported: every test of those files
             if path in self.idx.open_a:
@@ -325,6 +384,11 @@ class Analyzer:
         if comment_only(old, new):
             v.reasons.append(f"comment-only:{path}")
             return
+        if equivalent_rewrite(fp):
+            v.equiv = True
+            v.reasons.append(f"equiv-rewrite:{path}")
+        else:
+            v.nonequiv = True
         self._probe_mod = mod if path.startswith("sqlglot/") else None
         try:
             old_tree = ast.parse(old)
@@ -415,22 +479,26 @@ class Analyzer:
         lo_bound = func.lineno
         hi_bound = func.end_lineno or func.lineno
         mask = 0
+        used = []
         # previous executed line at or before the insertion point
         ln = line_old_before
         while ln >= lo_bound:
             if ln in lm:
                 mask |= lm[ln]
+                used.append(ln)
                 break
             ln -= 1
         ln = line_old_before + 1
         while ln <= hi_bound:
             if ln in lm:
                 mask |= lm[ln]
+                used.append(ln)
                 break
             ln += 1
         if not mask:
-            mask = self.lines_mask(path, range(lo_bound, hi_bound + 1))
-        return mask
+            used = list(range(lo_bound, hi_bound + 1))
+            mask = self.lines_mask(path, used)
+        return mask, used
 
     def _old_func_by_path(self, old_scopes: Scopes, names: list[str]):
         """Find the def/class in the old tree with the same nesting path."""
@@ -476,7 +544,9 @@ class Analyzer:
                 if old_f is None:
                     # a brand-new def: at class level it may override a base method
                     self._class_level(path, mod, is_test_file, chain, {func_node.name}, v, f"newdef:{path}:{line}")
-            v.add(mask, f"def:{path}:{func_node.name}")
+            v.add(mask, f"def:{path}:{func_node.name}", path,
+                  range(func_node.lineno, (func_node.end_lineno or func_node.lineno) + 1) if side == "old"
+                  else (range(old_f.lineno, (old_f.end_lineno or old_f.lineno) + 1) if old_f is not None else None))
             if func is None and not mask:
                 # never ran in a test: a new override or decorator change may still matter
                 self._class_level(path, mod, is_test_file, chain, {func_node.name}, v, f"defhdr:{path}:{line}")
@@ -484,18 +554,19 @@ class Analyzer:
 
         if func is not None:
             if side == "old":
-                v.add(self.lines_mask(path, range(start, end + 1)), f"stmt:{path}:{line}")
+                v.add(self.lines_mask(path, range(start, end + 1)), f"stmt:{path}:{line}", path, range(start, end + 1))
                 lam = scopes.lambda_at(line, lo, hi) if lo is not None else scopes.lambda_at(line)
                 if lam is not None:
                     _, lam_node, _ = lam
-                    v.add(self.lines_mask(path, range(lam_node.lineno, (lam_node.end_lineno or lam_node.lineno) + 1)),
-                          f"lambda:{path}:{line}")
+                    lam_lines = range(lam_node.lineno, (lam_node.end_lineno or lam_node.lineno) + 1)
+                    v.add(self.lines_mask(path, lam_lines), f"lambda:{path}:{line}", path, lam_lines)
             else:
                 old_f = self._old_func_by_path(old_scopes, _class_path(chain[: chain.index(func) + 1]))
                 if old_f is None:
                     v.add(self.module_users(mod), f"newfunc:{path}:{line}")
                     return
-                v.add(self._neighbor_mask(path, old_scopes, o_before, old_f), f"insert:{path}:{line}")
+                nb_mask, nb_lines = self._neighbor_mask(path, old_scopes, o_before, old_f)
+                v.add(nb_mask, f"insert:{path}:{line}", path, nb_lines)
             if self.idx.lines_a.get(path) and func.lineno in self.idx.lines_a.get(path, ()):  # pragma: no cover
                 pass
             # the function also ran at import time (e.g. a factory building class tables)
@@ -524,8 +595,8 @@ class Analyzer:
             lam = scopes.lambda_at(line, lo, hi)
             if lam is not None:
                 _, lam_node, _ = lam
-                mask = self.lines_mask(path, range(lam_node.lineno, (lam_node.end_lineno or lam_node.lineno) + 1))
-                v.add(mask, f"lambda:{path}:{line}")
+                lam_lines = range(lam_node.lineno, (lam_node.end_lineno or lam_node.lineno) + 1)
+                v.add(self.lines_mask(path, lam_lines), f"lambda:{path}:{line}", path, lam_lines)
                 return
 
         names = _assigned_names(node)
