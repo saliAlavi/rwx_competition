@@ -26,12 +26,14 @@ DATA = os.environ.get("BR_DATA", "/data")
 SRC = os.environ.get("BR_SRC", "/opt/sqlglot")
 TMP = os.environ.get("BR_TMP", "/tmp")
 
+HEAVY_TEST_FILES = {"tests/test_optimizer.py", "tests/test_executor.py", "tests/dialects/test_duckdb.py",
+                    "tests/test_optimize_cross_joins.py"}
 WORKER_MS = 2000
 MAX_WORKERS = 8
 P_ANY_FAIL_CODE = 0.55  # chance a code change with candidates breaks at least one of them
 P_ANY_FAIL_FIXTURE = 0.95
-JOB_OVERHEAD = 0.30  # fork + importing sqlglot and the test modules, seconds of CPU
-FILE_OVERHEAD = 0.04
+JOB_OVERHEAD = 0.25  # fork + importing sqlglot and the test modules, seconds of CPU
+FILE_OVERHEAD = 0.03
 
 
 def log(*args) -> None:
@@ -68,6 +70,65 @@ def pack(nums: list[int], dur: dict[int, int]) -> tuple[int, list[list[int]]]:
     return best  # type: ignore[return-value]
 
 
+GAMBLE = os.environ.get("BR_GAMBLE", "0") == "1"
+PRICEY_RECORDED = 1.0  # seconds: a test this slow to list is worth gambling on
+GAMBLE_MISS_P = 0.03  # chance a pricey candidate fails while every cheap candidate passes
+
+
+PROBE_CPU = 0.45  # fork + importing sqlglot and every test module
+
+
+def decide(cand, runnable, fixture_only, cpu_cost, dur, meta, gamble=None, probe=False):
+    """Choose how to handle one commit. Returns mode, tests to run, tests to list."""
+    gamble = GAMBLE if gamble is None else gamble
+    out = {"mode": "EMPTY", "run": [], "listed": [], "cond": [], "run_cpu": 0.0, "gain": 0.0, "costs": ""}
+    if not cand:
+        return out
+    cost_b = pack(cand, dur)[0] / 1000
+    if not runnable:
+        out.update(mode="B", listed=list(cand))
+        return out
+    p_any = P_ANY_FAIL_FIXTURE if fixture_only else P_ANY_FAIL_CODE
+
+    def run_cost(tests):
+        if not tests:
+            return 0.0
+        return (sum(cpu_cost[t] for t in tests) + (0.0 if probe else JOB_OVERHEAD)
+                + FILE_OVERHEAD * len({meta[t][0] for t in tests}))
+
+    exp_fail = min(sum(dur[t] for t in cand) / 1000, 0.6)
+    cost_a = run_cost(cand) + p_any * (2.0 + exp_fail)
+    cheap = [t for t in cand if cpu_cost[t] <= dur[t] / 1000 * 1.05 + 0.03]
+    cheap_set = set(cheap)
+    pricey = [t for t in cand if t not in cheap_set]
+    cost_h = math.inf
+    if cheap and pricey:
+        cost_h = run_cost(cheap) + pack(pricey, dur)[0] / 1000 + 0.3 * exp_fail
+    cost_g = math.inf
+    gamble_set = [t for t in cand if dur[t] >= PRICEY_RECORDED * 1000 or t not in cheap_set]
+    rest = [t for t in cand if t not in set(gamble_set)]
+    if gamble and gamble_set and rest:
+        cost_g = (run_cost(rest) + p_any * (pack(gamble_set, dur)[0] / 1000 + 0.5)
+                  + (1 - p_any) * GAMBLE_MISS_P * 300)
+    best = min(cost_a, cost_b, cost_h, cost_g)
+    forced = os.environ.get("BR_MODE")
+    if forced == "A":
+        best = cost_a
+    elif forced == "B":
+        best = cost_b
+    out["costs"] = f"A={cost_a:.2f} B={cost_b:.2f} H={cost_h:.2f} G={cost_g:.2f}"
+    if best == cost_b:
+        out.update(mode="B", listed=list(cand))
+    elif best == cost_a:
+        out.update(mode="A", run=list(cand), run_cpu=run_cost(cand))
+    elif best == cost_h:
+        out.update(mode="H", run=cheap, listed=pricey, run_cpu=run_cost(cheap))
+    else:
+        out.update(mode="G", run=rest, cond=gamble_set, run_cpu=run_cost(rest))
+    out["gain"] = cost_b - best
+    return out
+
+
 def bits(mask: int):
     while mask:
         low = mask & -mask
@@ -83,18 +144,48 @@ class Plan:
         self.mode = "B"
         self.run: list[int] = []
         self.listed: list[int] = []  # included without running
+        self.cond: list[int] = []  # included without running, only if a run test failed
         self.job = None
         self.reasons: list[str] = []
         self.fixture_only = True
         self.gain = 0.0
         self.run_cpu = 0.0
+        self.needs_probe = False
+        self.probe_modules: list[str] = []
 
 
 def main() -> None:
-    t_start = time.monotonic()
     answers_out = os.fdopen(os.dup(1), "w", encoding="utf-8")
     os.dup2(2, 1)  # nothing but answers may reach the real stdout
     sys.stdout = sys.stderr
+    written: set[str] = set()
+    try:
+        _main(answers_out, written)
+    except BaseException as error:  # never leave a commit unanswered
+        import traceback
+
+        log(f"fatal: {error!r}\n{traceback.format_exc()}")
+        _fallback(answers_out, written)
+    answers_out.flush()
+
+
+def _fallback(answers_out, written: set) -> None:
+    """Answer every remaining commit by listing every test (never a miss, never rejected)."""
+    try:
+        tests = json.load(open(os.path.join(DATA, "tests.json")))["tests"]
+        dur = {t["number"]: ms(t["seconds"]) for t in tests}
+        workers = pack(sorted(dur), dur)[1]
+    except Exception:
+        workers = []
+    for path in sorted(glob.glob(os.path.join(DATA, "commits", "*.patch"))):
+        commit = os.path.basename(path)[: -len(".patch")]
+        if commit not in written:
+            answers_out.write(json.dumps({"commit": commit, "workers": workers}) + "\n")
+            written.add(commit)
+
+
+def _main(answers_out, written: set) -> None:
+    t_start = time.monotonic()
 
     sys.path.insert(0, APP)
     from br import analyze as A
@@ -117,7 +208,7 @@ def main() -> None:
         by_file.setdefault(t["file"], []).append(t["number"])
         by_class.setdefault(f"{t['file']}::{cls}", []).append(t["number"])
 
-    wall_limit = 180.0 if n_commits <= 45 else 270.0
+    wall_limit = float(os.environ.get("BR_WALL_LIMIT", 180.0 if n_commits <= 45 else 270.0))
     deadline = t_start + wall_limit - 30.0
 
     try:
@@ -193,6 +284,8 @@ def main() -> None:
             plan.files = files
             plan.reasons = verdict.reasons
             plan.fixture_only = verdict.fixture_only
+            plan.needs_probe = verdict.needs_probe and files is not None
+            plan.probe_modules = sorted(verdict.probe_modules)
             if verdict.global_change:
                 plan.files = files  # still runnable, but it is a broad change
         except Exception as error:  # anything unexpected: list everything
@@ -200,87 +293,92 @@ def main() -> None:
             plan.cand = list(all_nums)
             plan.files = None
 
+    import resource as _res
+
+    def _cpu(who=_res.RUSAGE_SELF):
+        u = _res.getrusage(who)
+        return u.ru_utime + u.ru_stime
+
+    log(f"cpu after analysis: self={_cpu():.2f}s")
     # ---- decide per commit
     for plan in plans:
-        cand = plan.cand
-        if not cand:
-            plan.mode = "EMPTY"
-            continue
-        cost_b = pack(cand, dur)[0] / 1000
-        if plan.files is None:
-            plan.mode, plan.listed = "B", cand
-            continue
-        p_any = P_ANY_FAIL_FIXTURE if plan.fixture_only else P_ANY_FAIL_CODE
-        n_files = len({meta[t][0] for t in cand})
-        cpu_all = sum(cpu_cost[t] for t in cand)
-        exp_fail = min(sum(dur[t] for t in cand) / 1000, 0.6)
-        cost_a = cpu_all + JOB_OVERHEAD + FILE_OVERHEAD * n_files + p_any * (2.0 + exp_fail)
-        cheap = [t for t in cand if cpu_cost[t] <= dur[t] / 1000 * 1.05 + 0.03]
-        pricey = [t for t in cand if t not in set(cheap)]
-        cost_h = math.inf
-        if cheap and pricey:
-            n_files_h = len({meta[t][0] for t in cheap})
-            cost_h = (
-                sum(cpu_cost[t] for t in cheap) + JOB_OVERHEAD + FILE_OVERHEAD * n_files_h
-                + pack(pricey, dur)[0] / 1000 + 0.3 * exp_fail
-            )
-        best = min(cost_a, cost_b, cost_h)
-        if best == cost_b:
-            plan.mode, plan.listed = "B", cand
-        elif best == cost_a:
-            plan.mode, plan.run = "A", cand
-            plan.run_cpu = cpu_all
-        else:
-            plan.mode, plan.run, plan.listed = "H", cheap, pricey
-            plan.run_cpu = sum(cpu_cost[t] for t in cheap)
-        plan.gain = cost_b - best
-        log(f"{plan.commit}: cand={len(cand)} A={cost_a:.2f} B={cost_b:.2f} H={cost_h:.2f} -> {plan.mode}"
-            f" | {'; '.join(plan.reasons[:3])}")
+        d = decide(plan.cand, plan.files is not None, plan.fixture_only, cpu_cost, dur, meta,
+                   probe=plan.needs_probe)
+        plan.mode, plan.run, plan.listed, plan.cond = d["mode"], d["run"], d["listed"], d["cond"]
+        plan.run_cpu, plan.gain = d["run_cpu"], d["gain"]
+        if plan.cand:
+            log(f"{plan.commit}: cand={len(plan.cand)} {d['costs']} -> {plan.mode}"
+                f" | {'; '.join(plan.reasons[:3])}")
 
     # ---- CPU budget: two slots, keep well inside the wall-clock limit
     elapsed = time.monotonic() - t_start
     budget = max(0.0, (wall_limit - 45.0 - elapsed) * 2 * 0.8)
-    runnable = [p for p in plans if p.mode in ("A", "H")]
+    runnable = [p for p in plans if p.mode in ("A", "H", "G")]
     planned = sum(p.run_cpu + JOB_OVERHEAD for p in runnable)
     if planned > budget:
         for p in sorted(runnable, key=lambda p: p.gain / max(p.run_cpu, 0.01)):
             if planned <= budget:
                 break
             planned -= p.run_cpu + JOB_OVERHEAD
-            p.mode, p.listed, p.run = "B", p.cand, []
+            p.mode, p.listed, p.run, p.cond = "B", p.cand, [], []
             log(f"{p.commit}: demoted to B for the CPU budget")
 
     # ---- run
-    runnable = [p for p in plans if p.mode in ("A", "H") and p.run]
+    runnable = [p for p in plans if (p.mode in ("A", "H", "G") and p.run) or p.needs_probe]
+    all_test_files = sorted(by_file)
     if runnable:
         from br import runner as R
 
-        R.preimport()
+        heavy = any(p.needs_probe for p in runnable) or any(
+            meta[t][0] in HEAVY_TEST_FILES for p in runnable for t in p.run)
+        R.preimport(heavy=heavy)
         jobs = []
         for p in runnable:
             items = [(t, *meta[t]) for t in sorted(p.run, key=lambda t: (meta[t][0], meta[t][1], t))]
-            timeouts = {t: max(2.0, 4.0 * cpu_cost[t] + 1.0) for t in p.run}
-            p.job = R.Job(key=p.commit, files=p.files, tests=items, timeouts=timeouts)
+            if p.mode not in ("A", "H", "G"):
+                items = []
+            timeouts = {t: max(2.0, 4.0 * cpu_cost[t] + 1.0) for t, *_ in items}
+            probe = {"modules": p.probe_modules, "files": all_test_files} if p.needs_probe else None
+            p.job = R.Job(key=p.commit, files=p.files, tests=items, timeouts=timeouts, probe=probe)
             jobs.append(p.job)
         # biggest first so the two slots finish together
         jobs.sort(key=lambda j: -sum(cpu_cost[t[0]] for t in j.tests))
-        R.Executor(slots=2, tmp=TMP).run(jobs, deadline=deadline)
+        log(f"cpu after preimport: self={_cpu():.2f}s")
+        try:
+            R.Executor(slots=2, tmp=TMP).run(jobs, deadline=deadline)
+        except Exception as error:  # list what we could not finish running
+            import traceback
+
+            log(f"executor failed: {error!r}\n{traceback.format_exc()}")
+            for j in jobs:
+                done = j.failed | j.passed
+                j.failed.update(t[0] for t in j.tests if t[0] not in done)
+                if j.probe and not j.probed:
+                    j.all_failed = True
+        log(f"cpu after run: self={_cpu():.2f}s children={_cpu(_res.RUSAGE_CHILDREN):.2f}s")
+        for j in jobs:
+            log(f"  job {j.key}: tests={len(j.tests)} test_cpu={sum(j.cpu.values()):.2f}s")
 
     # ---- answer
     total_ms = 0
     for p in plans:
-        if p.mode == "EMPTY":
-            out: list[int] = []
-        elif p.mode == "B":
-            out = list(p.listed)
-        else:
-            job = p.job
+        out: list[int] = list(p.listed) if p.mode in ("B", "H") else []
+        job = p.job
+        if job is not None:
             failed = set(job.failed)
             for f in job.failed_files:
                 failed.update(by_file.get(f, ()))
             for c in job.failed_classes:
                 failed.update(by_class.get(c, ()))
-            out = sorted(failed | set(p.listed))
+            for mod in job.failed_modules:
+                if idx is not None:
+                    failed.update(bit_to_num[i] for i in bits(analyzer.module_users(mod))
+                                  if bit_to_num[i] is not None)
+            if job.all_failed:
+                failed.update(all_nums)
+            if p.mode == "G" and (failed & set(p.run)):
+                failed.update(p.cond)
+            out = sorted(set(out) | failed)
             if job.note:
                 log(f"{p.commit}: {job.note.strip()[:300]}")
         valid = sorted(set(n for n in out if n in dur))
@@ -288,6 +386,7 @@ def main() -> None:
         total_ms += cost
         log(f"{p.commit}: mode={p.mode} cand={len(p.cand)} out={len(valid)} cost={cost/1000:.3f}")
         answers_out.write(json.dumps({"commit": p.commit, "workers": workers}) + "\n")
+        written.add(p.commit)
     answers_out.flush()
     log(f"done in {time.monotonic() - t_start:.1f}s, simulated (excl. misses) {total_ms/1000:.1f}s")
 

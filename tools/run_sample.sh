@@ -8,5 +8,5 @@ docker run --rm --network none --memory 4096m --memory-swap 4096m --pids-limit 2
   --tmpfs /tmp:rw,size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges \
   --user 65534:65534 --env HOME=/tmp \
   -v $D/commits:/data/commits:ro -v $D/tests.json:/data/tests.json:ro \
-  $IMAGE > /tmp/br_data/output.jsonl 2> /tmp/br_data/stderr.log
+  $IMAGE python /app/tools/cpu_wrap.py > /tmp/br_data/output.jsonl 2> /tmp/br_data/stderr.log
 python3 score.py $D $D/answers.json /tmp/br_data/output.jsonl

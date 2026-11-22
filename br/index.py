@@ -31,8 +31,10 @@ def _from_json(path: str) -> Index:
     idx.tests = raw["tests"]
     idx.line_b = {f: {int(ln): sets[r] for ln, r in lm.items()} for f, lm in raw["line_b"].items()}
     idx.lines_a = {f: frozenset(v) for f, v in raw["lines_a"].items()}
-    for key in ("class_users", "module_users", "module_users_b", "open_a", "open_b", "ident_users"):
-        setattr(idx, key, {k: sets[r] for k, r in raw[key].items()})
+    idx.line_a = {f: {int(ln): sets[r] for ln, r in lm.items()} for f, lm in raw.get("line_a", {}).items()}
+    for key in ("class_users", "module_users", "module_users_b", "open_a", "open_b", "ident_users",
+                "pair_users", "ident_users_a", "class_users_a"):
+        setattr(idx, key, {k: sets[r] for k, r in raw.get(key, {}).items()})
     idx.extra = raw.get("extra", {})
     return idx
 

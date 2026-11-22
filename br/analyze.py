@@ -37,6 +37,8 @@ class Verdict:
     reasons: list = field(default_factory=list)
     global_change: bool = False
     fixture_only: bool = True
+    needs_probe: bool = False  # a real Python change: check that everything still imports
+    probe_modules: set = field(default_factory=set)
 
     def add(self, mask: int, reason: str) -> None:
         self.mask |= mask
@@ -197,6 +199,7 @@ class Analyzer:
         self.all = idx.all_mask()
         self._test_ids = idx.tests
         self._file_mask_cache: dict[str, int] = {}
+        self._importtime = set(idx.extra.get("importtime_idents", ()))
 
     # ---- masks
     def lines_mask(self, path: str, lines) -> int:
@@ -280,6 +283,9 @@ class Analyzer:
                     mod = module_name(p)
                     v.add(self.module_users(mod), f"module:{mod}")
                     v.fixture_only = False
+                    v.needs_probe = True
+                    if p == old_path and p.startswith("sqlglot/") and mod:
+                        v.probe_modules.add(mod)
                     if os.path.basename(p) == "__init__.py":
                         pkg_dir = os.path.dirname(p)
                         v.add(self.module_users(module_name(pkg_dir + "/__init__.py")), f"pkg:{pkg_dir}")
@@ -312,12 +318,14 @@ class Analyzer:
 
         if old_b is None or new_b is None:
             v.add(self.module_users(mod), f"module:{mod}")
+            v.needs_probe = True
             return
         old = old_b.decode("utf-8", "surrogateescape")
         new = new_b.decode("utf-8", "surrogateescape")
         if comment_only(old, new):
             v.reasons.append(f"comment-only:{path}")
             return
+        self._probe_mod = mod if path.startswith("sqlglot/") else None
         try:
             old_tree = ast.parse(old)
         except SyntaxError:
@@ -328,6 +336,8 @@ class Analyzer:
         except SyntaxError:
             # the module no longer imports: everything that loads it breaks
             v.add(self.module_users(mod), f"syntax-error:{mod}")
+            self._probe_mod = mod if path.startswith("sqlglot/") else None
+            self._probe(v)
             if is_test_file:
                 v.add(self.tests_in_file(path), f"file:{path}")
             return
@@ -393,6 +403,7 @@ class Analyzer:
                     continue  # blank/comment line between statements
                 # e.g. a decorator-less continuation we failed to place: be safe
                 v.add(self.module_users(mod), f"unplaced:{path}:{line}")
+                self._probe(v)
                 continue
             start, end, node, chain = found
             self._classify(path, mod, is_test_file, side, line, lo, hi, start, end, node, chain,
@@ -435,9 +446,24 @@ class Analyzer:
             node = nxt
         return node
 
+    def _probe(self, v: Verdict) -> None:
+        """The edit runs at import time: check at run time that everything still imports."""
+        v.needs_probe = True
+        if getattr(self, "_probe_mod", None):
+            v.probe_modules.add(self._probe_mod)
+
     def _classify(self, path, mod, is_test_file, side, line, lo, hi, start, end, node, chain,
                   scopes, old_scopes, o_before, v: Verdict) -> None:
         func = _func_in_chain(chain)
+        lam_only = (
+            func is None and lo is not None
+            and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and scopes.lambda_at(line, lo, hi) is not None
+        )
+        if (func is None and not lam_only) or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            self._probe(v)  # module/class level statement, def header or decorator
+        elif side == "old" and any(ln in self.idx.lines_a.get(path, ()) for ln in range(start, end + 1)):
+            self._probe(v)  # function code that ran while modules were being imported
         # a def header (signature, decorators): behaves like an edit inside that function
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             func_node = node
@@ -476,9 +502,21 @@ class Analyzer:
             body_lines = range(func.lineno + 1, (func.end_lineno or func.lineno) + 1)
             a_lines = self.idx.lines_a.get(path, ())
             if side == "old" and any(ln in a_lines for ln in range(start, end + 1)):
+                # ran while some test module (or sqlglot itself) was being imported: whatever it
+                # built is shared by every test of those files, and the closures it returned
+                # run later in the tests that call them
+                la = getattr(self.idx, "line_a", {}).get(path, {})
+                mask_a = 0
+                for ln in range(start, end + 1):
+                    mask_a |= la.get(ln, 0)
+                v.add(mask_a, f"importtime-stmt:{path}:{line}")
                 v.add(self.lines_mask(path, body_lines), f"importtime-func:{path}:{func.name}")
-                self._class_level(path, mod, is_test_file, chain[: chain.index(func)], {func.name}, v,
-                                  f"importtime-func-users:{path}:{func.name}")
+            elif side == "new" and old_f is not None:
+                la = getattr(self.idx, "line_a", {}).get(path, {})
+                mask_a = 0
+                for ln in range(old_f.lineno, (old_f.end_lineno or old_f.lineno) + 1):
+                    mask_a |= la.get(ln, 0)
+                v.add(mask_a, f"importtime-insert:{path}:{line}")
             return
 
         # class body or module level, but maybe only inside a lambda's body
@@ -491,6 +529,24 @@ class Analyzer:
                 return
 
         names = _assigned_names(node)
+        if (
+            isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+            and names
+            and any(isinstance(c, ast.ClassDef) for c in chain)
+            and not (names & self._importtime)
+        ):
+            # A class attribute nothing reads at import time: only tests that both use the
+            # class and executed a statement reading the attribute can notice the change.
+            users = A_MASK = 0
+            probe = Verdict()
+            self._class_level(path, mod, is_test_file, chain, names, probe, f"attr:{path}:{line}")
+            users = probe.mask
+            readers = self.ident_users(names)
+            v.add(users & readers, f"attr-read:{','.join(sorted(names))}")
+            if is_test_file:
+                classes = [c for c in chain if isinstance(c, ast.ClassDef)]
+                v.add(self.tests_in_class(path, classes[0].name), f"testclass:{path}")
+            return
         if any(isinstance(c, ast.ClassDef) for c in chain) or isinstance(node, ast.ClassDef):
             self._class_level(path, mod, is_test_file, chain + ((node,) if isinstance(node, ast.ClassDef) else ()),
                               names, v, f"class:{path}:{line}")
@@ -537,9 +593,10 @@ class Analyzer:
         if names:
             # static access as `ClassName.attr` from code that never instantiates it
             cls_name = classes[-1].name
-            named = self.ident_users([cls_name])
-            if bin(named).count("1") < len(self.idx.tests) // 4:
-                v.add(named & self.ident_users(names) & self.module_users(mod), reason + ":static")
+            pairs = 0
+            for name in names:
+                pairs |= self.idx.pair_users.get(f"{cls_name}.{name}", 0)
+            v.add(pairs, reason + ":static")
             v.add(self._derived_users(names), reason + ":derived")
         if is_test_file:
             v.add(self.tests_in_class(path, classes[0].name), reason + ":testclass")

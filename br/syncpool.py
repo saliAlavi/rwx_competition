@@ -15,6 +15,9 @@ import pickle
 from concurrent.futures import Future
 
 
+BROKEN = {"flag": False}  # a real pool would now be unusable for the rest of its class
+
+
 class SyncProcessPool:
     def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=(), **_):
         self._broken = None
@@ -33,14 +36,30 @@ class SyncProcessPool:
             return future
         try:
             fn, args, kwargs = pickle.loads(pickle.dumps((fn, args, kwargs)))
-            result = fn(*args, **kwargs)
-            result = pickle.loads(pickle.dumps(result))
         except BaseException as error:
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 raise
             future.set_exception(error)
-        else:
-            future.set_result(result)
+            return future
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as error:
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            try:  # the worker pickles the exception back to the parent
+                pickle.loads(pickle.dumps(error))
+            except BaseException:
+                BROKEN["flag"] = True
+            future.set_exception(error)
+            return future
+        try:
+            result = pickle.loads(pickle.dumps(result))
+        except BaseException as error:
+            # "A result has failed to un-serialize": the real pool breaks for good
+            BROKEN["flag"] = True
+            future.set_exception(concurrent.futures.process.BrokenProcessPool(repr(error)))
+            return future
+        future.set_result(result)
         return future
 
     def map(self, fn, *iterables, timeout=None, chunksize=1):
@@ -77,6 +96,9 @@ def limit_threads() -> None:
     def connect(database=":memory:", read_only=False, config=None, **kwargs):
         config = dict(config or {})
         config.setdefault("threads", 1)
+        # duckdb 2.0 also starts `async_threads` (256 by default) I/O threads per database:
+        # alone that exhausts the scorer's 256-process limit
+        config.setdefault("async_threads", 1)
         return original(database, read_only=read_only, config=config, **kwargs)
 
     connect._br_wrapped = True

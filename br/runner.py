@@ -90,10 +90,28 @@ class _Timeout(BaseException):
     pass
 
 
-def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict) -> None:
+class ForkFailed(Exception):
+    pass
+
+
+RSS_LIMIT_BYTES = int(float(os.environ.get("BR_RSS_LIMIT_GB", "1.4")) * (1 << 30))
+_PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+
+
+def _rss(pid: int) -> int:
+    try:
+        with open(f"/proc/{pid}/statm") as f:
+            return int(f.read().split()[1]) * _PAGE
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict, probe: dict | None = None) -> None:
     import importlib
     import unittest
     from unittest.suite import _ErrorHolder
+
+    from br import syncpool
 
     devnull = os.open(os.devnull, os.O_WRONLY)
     os.dup2(devnull, 1)
@@ -129,6 +147,10 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict) -> None:
         def stopTest(self, test):
             signal.setitimer(signal.ITIMER_PROF, 0)
             num = getattr(test, "_br_num", None)
+            if syncpool.BROKEN["flag"]:
+                syncpool.BROKEN["flag"] = False
+                emit("clsfail", f"{test.__class__.__module__.replace('.', '/')}.py::{test.__class__.__name__}",
+                     "process pool would break")
             emit("end", num, self.failed_now, round(time.process_time() - self.t0, 4))
             super().stopTest(test)
 
@@ -157,6 +179,35 @@ def _child_main(tree_root: str, plan: list, wfd: int, timeouts: dict) -> None:
 
         def addUnexpectedSuccess(self, test):
             self.failed_now = True
+
+    if probe is not None:
+        try:
+            signal.setitimer(signal.ITIMER_PROF, 30.0)
+            importlib.import_module("sqlglot")
+            signal.setitimer(signal.ITIMER_PROF, 0)
+        except BaseException as error:  # noqa: BLE001
+            signal.setitimer(signal.ITIMER_PROF, 0)
+            emit("allfail", repr(error)[:300])
+            emit("done")
+            out.flush()
+            os._exit(0)
+        for mod in probe.get("modules", ()):
+            try:
+                signal.setitimer(signal.ITIMER_PROF, 30.0)
+                importlib.import_module(mod)
+                signal.setitimer(signal.ITIMER_PROF, 0)
+            except BaseException as error:  # noqa: BLE001
+                signal.setitimer(signal.ITIMER_PROF, 0)
+                emit("modfail", mod, repr(error)[:300])
+        for file in probe.get("files", ()):
+            try:
+                signal.setitimer(signal.ITIMER_PROF, 30.0)
+                importlib.import_module(file[:-3].replace("/", "."))
+                signal.setitimer(signal.ITIMER_PROF, 0)
+            except BaseException as error:  # noqa: BLE001
+                signal.setitimer(signal.ITIMER_PROF, 0)
+                emit("impfail", file, repr(error)[:300])
+        emit("probed")
 
     for file, items in plan:
         modname = file[:-3].replace("/", ".")
@@ -205,11 +256,15 @@ class Job:
     files: dict  # rel path -> bytes | None
     tests: list  # [(num, file, cls, method)]
     timeouts: dict  # num -> seconds
+    probe: dict | None = None  # {"modules": [...], "files": [...]} imported before the tests
     # results
     failed: set = field(default_factory=set)
     passed: set = field(default_factory=set)
     failed_files: set = field(default_factory=set)
     failed_classes: set = field(default_factory=set)
+    failed_modules: set = field(default_factory=set)
+    all_failed: bool = False
+    probed: bool = False
     cpu: dict = field(default_factory=dict)
     aborted: bool = False
     note: str = ""
@@ -247,11 +302,23 @@ class Executor:
         for rel, data in job.files.items():
             tree.write(rel, data)
         rfd, wfd = os.pipe()
-        pid = os.fork()
+        pid = None
+        for attempt in range(25):
+            try:
+                pid = os.fork()
+                break
+            except OSError as error:  # EAGAIN: process limit reached; wait for children to exit
+                log(f"fork failed ({error}); retry {attempt}")
+                time.sleep(0.05 * (attempt + 1))
+        if pid is None:
+            os.close(rfd)
+            os.close(wfd)
+            raise ForkFailed()
         if pid == 0:  # child
             try:
                 os.close(rfd)
-                _child_main(tree.root, self._plan(tests), wfd, job.timeouts)
+                _child_main(tree.root, self._plan(tests), wfd, job.timeouts,
+                            job.probe if not job.probed else None)
             except BaseException:
                 pass
             os._exit(1)
@@ -260,7 +327,7 @@ class Executor:
         return _Active(job=job, pid=pid, rfd=rfd, remaining=list(tests))
 
     def run(self, jobs: list[Job], deadline: float | None = None, hard_factor: float = 1.5) -> None:
-        queue: deque = deque((job, list(job.tests)) for job in jobs if job.tests)
+        queue: deque = deque((job, list(job.tests)) for job in jobs if job.tests or job.probe)
         active: dict[int, _Active] = {}
         sel = selectors.DefaultSelector()
         free = list(range(len(self.trees)))
@@ -279,11 +346,17 @@ class Executor:
             del active[slot]
             free.append(slot)
             job = a.job
+            if job.probe and not job.probed:
+                job.all_failed = True
+                job.note += " probe-crash"
             if a.remaining:
                 # the child died or was killed: the running test fails, the rest are re-run
                 if a.current is not None:
                     job.failed.add(a.current)
                     job.note += f" crash@{a.current}:{killed_reason}"
+                    for t in job.tests:
+                        if t[0] == a.current and killed_reason != "timeout":
+                            job.failed_classes.add(f"{t[1]}::{t[2]}")
                 rest = [t for t in a.remaining if t[0] != a.current]
                 if killed_reason == "timeout":
                     # a hang usually repeats in every test reaching the change: give up on the rest
@@ -314,12 +387,28 @@ class Executor:
             elif kind == "clsfail":
                 job.failed_classes.add(msg[1])
                 job.note += f" clsfail:{msg[1]}"
+            elif kind == "allfail":
+                job.all_failed = True
+                job.probed = True
+                a.remaining = []
+                job.note += f" allfail:{msg[1][:80]}"
+            elif kind == "modfail":
+                job.failed_modules.add(msg[1])
+                job.note += f" modfail:{msg[1]}:{msg[2][:80]}"
+            elif kind == "probed":
+                job.probed = True
             elif kind == "why":
                 job.note += f" why{msg[1]}:{msg[2][:150]}"
             elif kind == "done":
                 a.remaining = []
 
+        last_pidlog = 0.0
         while queue or active:
+            if os.environ.get("BR_PIDLOG") and time.monotonic() - last_pidlog > 0.5:
+                last_pidlog = time.monotonic()
+                total, rows = task_count()
+                if total > 60:
+                    log(f"tasks={total} {rows[:6]} active={[a.job.key for a in active.values()]}")
             while free and queue:
                 job, tests = queue.popleft()
                 if deadline is not None and time.monotonic() > deadline:
@@ -328,7 +417,16 @@ class Executor:
                     job.note += " deadline"
                     continue
                 slot = free.pop()
-                a = self._spawn(slot, job, tests)
+                try:
+                    a = self._spawn(slot, job, tests)
+                except ForkFailed:
+                    free.append(slot)
+                    job.failed.update(t[0] for t in tests)
+                    if job.probe and not job.probed:
+                        job.all_failed = True
+                    job.aborted = True
+                    job.note += " fork-failed"
+                    continue
                 active[slot] = a
                 sel.register(a.rfd, selectors.EVENT_READ, slot)
             if not active:
@@ -352,10 +450,31 @@ class Executor:
                         handle_line(a, json.loads(line))
             now = time.monotonic()
             for slot, a in list(active.items()):
+                if _rss(a.pid) > RSS_LIMIT_BYTES:
+                    log(f"{a.job.key}: child over memory limit, killed")
+                    finish(slot, a, "memory")
+                    continue
                 if a.current is not None:
                     limit = a.job.timeouts.get(a.current, 10.0) * hard_factor + 2.0
                     if now - a.started_at > limit:
                         finish(slot, a, "timeout")
+
+
+def task_count():
+    """Processes + threads visible in /proc (what --pids-limit counts)."""
+    total, rows = 0, []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            n = len(os.listdir(f"/proc/{entry}/task"))
+            comm = open(f"/proc/{entry}/comm").read().strip()
+        except OSError:
+            continue
+        total += n
+        rows.append((n, entry, comm))
+    rows.sort(reverse=True)
+    return total, rows
 
 
 def child_cpu_seconds() -> float:
@@ -377,7 +496,7 @@ PREIMPORT = (
 )
 
 
-def preimport() -> None:
+def preimport(heavy: bool = True) -> None:
     os.environ.setdefault("SKIP_INTEGRATION", "0")
     from br import syncpool
 
@@ -385,6 +504,8 @@ def preimport() -> None:
     import importlib
 
     for name in PREIMPORT:
+        if not heavy and name.split(".")[0] in ("numpy", "pandas", "duckdb", "dateutil", "pytz"):
+            continue
         try:
             importlib.import_module(name)
         except Exception as error:  # pragma: no cover

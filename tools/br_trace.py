@@ -61,8 +61,11 @@ def _on_line(code, line):
     return _DISABLE
 
 
+classes_a: set = set()
+
+
 def _on_call(code, offset, callable_, arg0):
-    if state["phase"] != "B":
+    if state["phase"] == "done":
         return
     if not isinstance(callable_, type):
         owner = getattr(callable_, "__self__", None)
@@ -72,7 +75,7 @@ def _on_call(code, offset, callable_, arg0):
             return
     module = getattr(callable_, "__module__", "") or ""
     if module.startswith(("sqlglot", "tests")):
-        classes.add(callable_)
+        (classes if state["phase"] == "B" else classes_a).add(callable_)
 
 
 def _audit(event, args):
@@ -131,12 +134,16 @@ def pytest_sessionfinish(session, exitstatus):
     mon.set_events(TOOL, 0)
     if not OUT:
         return
-    mro = set()
-    for klass in classes:
-        for base in klass.__mro__:
-            module = getattr(base, "__module__", "") or ""
-            if module.startswith(("sqlglot", "tests")):
-                mro.add(f"{module}:{base.__qualname__}")
+    def expand(found):
+        out = set()
+        for klass in found:
+            for base in klass.__mro__:
+                module = getattr(base, "__module__", "") or ""
+                if module.startswith(("sqlglot", "tests")):
+                    out.add(f"{module}:{base.__qualname__}")
+        return out
+
+    mro = expand(classes)
     rel = lambda d: {k[len(ROOT):]: sorted(v) for k, v in d.items()}
     data = {
         "exitstatus": int(exitstatus),
@@ -149,6 +156,7 @@ def pytest_sessionfinish(session, exitstatus):
         "files_a": sorted(files["A"]),
         "files_b": sorted(files["B"]),
         "classes": sorted(mro),
+        "classes_a": sorted(expand(classes_a)),
         "modules_a": modules.get("A", []),
         "modules_b": _snapshot_modules(),
     }
