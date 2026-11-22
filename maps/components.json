@@ -1,0 +1,601 @@
+{
+"sqlglot.dialects.singlestore:SingleStore.Tokenizer": [
+"sqlglot.dialects.singlestore:SingleStore"
+],
+"sqlglot.dialects.mysql:MySQL.Tokenizer": [
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.starrocks:StarRocks"
+],
+"sqlglot.tokens:Tokenizer": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.bigquery:BigQuery",
+"sqlglot.dialects.clickhouse:ClickHouse",
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.dax:DAX",
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.dremio:Dremio",
+"sqlglot.dialects.drill:Drill",
+"sqlglot.dialects.druid:Druid",
+"sqlglot.dialects.duckdb:DuckDB",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.exasol:Exasol",
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.oracle:Oracle",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.prql:PRQL",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.snowflake:Snowflake",
+"sqlglot.dialects.solr:Solr",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark",
+"sqlglot.dialects.sqlite:SQLite",
+"sqlglot.dialects.starrocks:StarRocks",
+"sqlglot.dialects.tableau:Tableau",
+"sqlglot.dialects.teradata:Teradata",
+"sqlglot.dialects.trino:Trino",
+"sqlglot.dialects.tsql:TSQL",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.tokens:_TokenizerBase": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.bigquery:BigQuery",
+"sqlglot.dialects.clickhouse:ClickHouse",
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.dax:DAX",
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.dremio:Dremio",
+"sqlglot.dialects.drill:Drill",
+"sqlglot.dialects.druid:Druid",
+"sqlglot.dialects.duckdb:DuckDB",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.exasol:Exasol",
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.oracle:Oracle",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.prql:PRQL",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.snowflake:Snowflake",
+"sqlglot.dialects.solr:Solr",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark",
+"sqlglot.dialects.sqlite:SQLite",
+"sqlglot.dialects.starrocks:StarRocks",
+"sqlglot.dialects.tableau:Tableau",
+"sqlglot.dialects.teradata:Teradata",
+"sqlglot.dialects.trino:Trino",
+"sqlglot.dialects.tsql:TSQL",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.parsers.singlestore:SingleStoreParser": [
+"sqlglot.dialects.singlestore:SingleStore"
+],
+"sqlglot.parsers.mysql:MySQLParser": [
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.starrocks:StarRocks"
+],
+"sqlglot.parser:Parser": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.bigquery:BigQuery",
+"sqlglot.dialects.clickhouse:ClickHouse",
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.dax:DAX",
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.dremio:Dremio",
+"sqlglot.dialects.drill:Drill",
+"sqlglot.dialects.druid:Druid",
+"sqlglot.dialects.duckdb:DuckDB",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.exasol:Exasol",
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.oracle:Oracle",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.prql:PRQL",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.snowflake:Snowflake",
+"sqlglot.dialects.solr:Solr",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark",
+"sqlglot.dialects.sqlite:SQLite",
+"sqlglot.dialects.starrocks:StarRocks",
+"sqlglot.dialects.tableau:Tableau",
+"sqlglot.dialects.teradata:Teradata",
+"sqlglot.dialects.trino:Trino",
+"sqlglot.dialects.tsql:TSQL",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.generators.singlestore:SingleStoreGenerator": [
+"sqlglot.dialects.singlestore:SingleStore"
+],
+"sqlglot.generators.mysql:MySQLGenerator": [
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.starrocks:StarRocks"
+],
+"sqlglot.generator:Generator": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.bigquery:BigQuery",
+"sqlglot.dialects.clickhouse:ClickHouse",
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.dax:DAX",
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.dremio:Dremio",
+"sqlglot.dialects.drill:Drill",
+"sqlglot.dialects.druid:Druid",
+"sqlglot.dialects.duckdb:DuckDB",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.exasol:Exasol",
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.oracle:Oracle",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.prql:PRQL",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.snowflake:Snowflake",
+"sqlglot.dialects.solr:Solr",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark",
+"sqlglot.dialects.sqlite:SQLite",
+"sqlglot.dialects.starrocks:StarRocks",
+"sqlglot.dialects.tableau:Tableau",
+"sqlglot.dialects.teradata:Teradata",
+"sqlglot.dialects.trino:Trino",
+"sqlglot.dialects.tsql:TSQL",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.dialects.dialect:JSONPathTokenizer": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.clickhouse:ClickHouse",
+"sqlglot.dialects.dax:DAX",
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.dremio:Dremio",
+"sqlglot.dialects.drill:Drill",
+"sqlglot.dialects.druid:Druid",
+"sqlglot.dialects.duckdb:DuckDB",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.exasol:Exasol",
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.oracle:Oracle",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.prql:PRQL",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.solr:Solr",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark",
+"sqlglot.dialects.sqlite:SQLite",
+"sqlglot.dialects.starrocks:StarRocks",
+"sqlglot.dialects.tableau:Tableau",
+"sqlglot.dialects.teradata:Teradata",
+"sqlglot.dialects.trino:Trino",
+"sqlglot.dialects.tsql:TSQL",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.jsonpath:JSONPathTokenizer": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.bigquery:BigQuery",
+"sqlglot.dialects.clickhouse:ClickHouse",
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.dax:DAX",
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.doris:Doris",
+"sqlglot.dialects.dremio:Dremio",
+"sqlglot.dialects.drill:Drill",
+"sqlglot.dialects.druid:Druid",
+"sqlglot.dialects.duckdb:DuckDB",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.exasol:Exasol",
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.mysql:MySQL",
+"sqlglot.dialects.oracle:Oracle",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.prql:PRQL",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave",
+"sqlglot.dialects.singlestore:SingleStore",
+"sqlglot.dialects.snowflake:Snowflake",
+"sqlglot.dialects.solr:Solr",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark",
+"sqlglot.dialects.sqlite:SQLite",
+"sqlglot.dialects.starrocks:StarRocks",
+"sqlglot.dialects.tableau:Tableau",
+"sqlglot.dialects.teradata:Teradata",
+"sqlglot.dialects.trino:Trino",
+"sqlglot.dialects.tsql:TSQL",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.dialects.dialect:Tokenizer": [
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.dialects.druid:Druid"
+],
+"sqlglot.parsers.druid:DruidParser": [
+"sqlglot.dialects.druid:Druid"
+],
+"sqlglot.generators.druid:DruidGenerator": [
+"sqlglot.dialects.druid:Druid"
+],
+"sqlglot.dialects.spark:Spark.Tokenizer": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.dialects.spark2:Spark2.Tokenizer": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.dialects.hive:Hive.Tokenizer": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.parsers.spark:SparkParser": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.parsers.spark2:Spark2Parser": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.parsers.hive:HiveParser": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.generators.spark:SparkGenerator": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.generators.spark2:Spark2Generator": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.generators.hive:HiveGenerator": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.dialects.hive:Hive.JSONPathTokenizer": [
+"sqlglot.dialects.databricks:Databricks",
+"sqlglot.dialects.hive:Hive",
+"sqlglot.dialects.spark2:Spark2",
+"sqlglot.dialects.spark:Spark"
+],
+"sqlglot.dialects.bigquery:BigQuery.Tokenizer": [
+"sqlglot.dialects.bigquery:BigQuery"
+],
+"sqlglot.parsers.bigquery:BigQueryParser": [
+"sqlglot.dialects.bigquery:BigQuery"
+],
+"sqlglot.generators.bigquery:BigQueryGenerator": [
+"sqlglot.dialects.bigquery:BigQuery"
+],
+"sqlglot.dialects.bigquery:BigQuery.JSONPathTokenizer": [
+"sqlglot.dialects.bigquery:BigQuery"
+],
+"sqlglot.dialects.teradata:Teradata.Tokenizer": [
+"sqlglot.dialects.teradata:Teradata"
+],
+"sqlglot.parsers.teradata:TeradataParser": [
+"sqlglot.dialects.teradata:Teradata"
+],
+"sqlglot.generators.teradata:TeradataGenerator": [
+"sqlglot.dialects.teradata:Teradata"
+],
+"sqlglot.dialects.tableau:Tableau.Tokenizer": [
+"sqlglot.dialects.tableau:Tableau"
+],
+"sqlglot.parsers.tableau:TableauParser": [
+"sqlglot.dialects.tableau:Tableau"
+],
+"sqlglot.generators.tableau:TableauGenerator": [
+"sqlglot.dialects.tableau:Tableau"
+],
+"sqlglot.dialects.prql:PRQL.Tokenizer": [
+"sqlglot.dialects.prql:PRQL"
+],
+"sqlglot.parsers.prql:PRQLParser": [
+"sqlglot.dialects.prql:PRQL"
+],
+"sqlglot.generators.prql:PRQLGenerator": [
+"sqlglot.dialects.prql:PRQL"
+],
+"sqlglot.dialects.fabric:Fabric.Tokenizer": [
+"sqlglot.dialects.fabric:Fabric"
+],
+"sqlglot.dialects.tsql:TSQL.Tokenizer": [
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.tsql:TSQL"
+],
+"sqlglot.parsers.fabric:FabricParser": [
+"sqlglot.dialects.fabric:Fabric"
+],
+"sqlglot.parsers.tsql:TSQLParser": [
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.tsql:TSQL"
+],
+"sqlglot.generators.fabric:FabricGenerator": [
+"sqlglot.dialects.fabric:Fabric"
+],
+"sqlglot.generators.tsql:TSQLGenerator": [
+"sqlglot.dialects.fabric:Fabric",
+"sqlglot.dialects.tsql:TSQL"
+],
+"sqlglot.dialects.databricks:Databricks.Tokenizer": [
+"sqlglot.dialects.databricks:Databricks"
+],
+"sqlglot.parsers.databricks:DatabricksParser": [
+"sqlglot.dialects.databricks:Databricks"
+],
+"sqlglot.generators.databricks:DatabricksGenerator": [
+"sqlglot.dialects.databricks:Databricks"
+],
+"sqlglot.dialects.databricks:Databricks.JSONPathTokenizer": [
+"sqlglot.dialects.databricks:Databricks"
+],
+"sqlglot.dialects.oracle:Oracle.Tokenizer": [
+"sqlglot.dialects.oracle:Oracle"
+],
+"sqlglot.parsers.oracle:OracleParser": [
+"sqlglot.dialects.oracle:Oracle"
+],
+"sqlglot.generators.oracle:OracleGenerator": [
+"sqlglot.dialects.oracle:Oracle"
+],
+"sqlglot.dialects.dune:Dune.Tokenizer": [
+"sqlglot.dialects.dune:Dune"
+],
+"sqlglot.dialects.trino:Trino.Tokenizer": [
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.trino:Trino"
+],
+"sqlglot.dialects.presto:Presto.Tokenizer": [
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.trino:Trino"
+],
+"sqlglot.parsers.dune:DuneParser": [
+"sqlglot.dialects.dune:Dune"
+],
+"sqlglot.parsers.trino:TrinoParser": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.trino:Trino"
+],
+"sqlglot.parsers.presto:PrestoParser": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.trino:Trino"
+],
+"sqlglot.generators.dune:DuneGenerator": [
+"sqlglot.dialects.dune:Dune"
+],
+"sqlglot.generators.trino:TrinoGenerator": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.trino:Trino"
+],
+"sqlglot.generators.presto:PrestoGenerator": [
+"sqlglot.dialects.athena:Athena",
+"sqlglot.dialects.dune:Dune",
+"sqlglot.dialects.presto:Presto",
+"sqlglot.dialects.trino:Trino"
+],
+"sqlglot.dialects.exasol:Exasol.Tokenizer": [
+"sqlglot.dialects.exasol:Exasol"
+],
+"sqlglot.parsers.exasol:ExasolParser": [
+"sqlglot.dialects.exasol:Exasol"
+],
+"sqlglot.generators.exasol:ExasolGenerator": [
+"sqlglot.dialects.exasol:Exasol"
+],
+"sqlglot.dialects.clickhouse:ClickHouse.Tokenizer": [
+"sqlglot.dialects.clickhouse:ClickHouse"
+],
+"sqlglot.parsers.clickhouse:ClickHouseParser": [
+"sqlglot.dialects.clickhouse:ClickHouse"
+],
+"sqlglot.generators.clickhouse:ClickHouseGenerator": [
+"sqlglot.dialects.clickhouse:ClickHouse"
+],
+"sqlglot.dialects.starrocks:StarRocks.Tokenizer": [
+"sqlglot.dialects.starrocks:StarRocks"
+],
+"sqlglot.parsers.starrocks:StarRocksParser": [
+"sqlglot.dialects.starrocks:StarRocks"
+],
+"sqlglot.generators.starrocks:StarRocksGenerator": [
+"sqlglot.dialects.starrocks:StarRocks"
+],
+"sqlglot.executor.python:Python.Tokenizer": [
+"sqlglot.executor.python:Python"
+],
+"sqlglot.parsers.base:BaseParser": [
+"sqlglot.dialects.dialect:Dialect",
+"sqlglot.executor.python:Python"
+],
+"sqlglot.generators.python:PythonGenerator": [
+"sqlglot.executor.python:Python"
+],
+"sqlglot.dialects.duckdb:DuckDB.Tokenizer": [
+"sqlglot.dialects.duckdb:DuckDB"
+],
+"sqlglot.parsers.duckdb:DuckDBParser": [
+"sqlglot.dialects.duckdb:DuckDB"
+],
+"sqlglot.generators.duckdb:DuckDBGenerator": [
+"sqlglot.dialects.duckdb:DuckDB"
+],
+"sqlglot.dialects.materialize:Materialize.Tokenizer": [
+"sqlglot.dialects.materialize:Materialize"
+],
+"sqlglot.dialects.postgres:Postgres.Tokenizer": [
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave"
+],
+"sqlglot.parsers.materialize:MaterializeParser": [
+"sqlglot.dialects.materialize:Materialize"
+],
+"sqlglot.parsers.postgres:PostgresParser": [
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave"
+],
+"sqlglot.generators.materialize:MaterializeGenerator": [
+"sqlglot.dialects.materialize:Materialize"
+],
+"sqlglot.generators.postgres:PostgresGenerator": [
+"sqlglot.dialects.materialize:Materialize",
+"sqlglot.dialects.postgres:Postgres",
+"sqlglot.dialects.redshift:Redshift",
+"sqlglot.dialects.risingwave:RisingWave"
+],
+"sqlglot.dialects.redshift:Redshift.Tokenizer": [
+"sqlglot.dialects.redshift:Redshift"
+],
+"sqlglot.parsers.redshift:RedshiftParser": [
+"sqlglot.dialects.redshift:Redshift"
+],
+"sqlglot.generators.redshift:RedshiftGenerator": [
+"sqlglot.dialects.redshift:Redshift"
+],
+"sqlglot.dialects.solr:Solr.Tokenizer": [
+"sqlglot.dialects.solr:Solr"
+],
+"sqlglot.parsers.solr:SolrParser": [
+"sqlglot.dialects.solr:Solr"
+],
+"sqlglot.generators.solr:SolrGenerator": [
+"sqlglot.dialects.solr:Solr"
+],
+"sqlglot.dialects.risingwave:RisingWave.Tokenizer": [
+"sqlglot.dialects.risingwave:RisingWave"
+],
+"sqlglot.parsers.risingwave:RisingWaveParser": [
+"sqlglot.dialects.risingwave:RisingWave"
+],
+"sqlglot.generators.risingwave:RisingWaveGenerator": [
+"sqlglot.dialects.risingwave:RisingWave"
+],
+"sqlglot.dialects.dax:DAX.Tokenizer": [
+"sqlglot.dialects.dax:DAX"
+],
+"sqlglot.parsers.dax:DAXParser": [
+"sqlglot.dialects.dax:DAX"
+],
+"sqlglot.generators.dax:DAXGenerator": [
+"sqlglot.dialects.dax:DAX"
+],
+"sqlglot.dialects.sqlite:SQLite.Tokenizer": [
+"sqlglot.dialects.sqlite:SQLite"
+],
+"sqlglot.parsers.sqlite:SQLiteParser": [
+"sqlglot.dialects.sqlite:SQLite"
+],
+"sqlglot.generators.sqlite:SQLiteGenerator": [
+"sqlglot.dialects.sqlite:SQLite"
+],
+"sqlglot.dialects.athena:Athena.Tokenizer": [
+"sqlglot.dialects.athena:Athena"
+],
+"sqlglot.parsers.athena:AthenaParser": [
+"sqlglot.dialects.athena:Athena"
+],
+"sqlglot.parsers.athena:AthenaTrinoParser": [
+"sqlglot.dialects.athena:Athena"
+],
+"sqlglot.generators.athena:AthenaGenerator": [
+"sqlglot.dialects.athena:Athena"
+],
+"sqlglot.generators.athena:AthenaTrinoGenerator": [
+"sqlglot.dialects.athena:Athena"
+],
+"sqlglot.dialects.drill:Drill.Tokenizer": [
+"sqlglot.dialects.drill:Drill"
+],
+"sqlglot.parsers.drill:DrillParser": [
+"sqlglot.dialects.drill:Drill"
+],
+"sqlglot.generators.drill:DrillGenerator": [
+"sqlglot.dialects.drill:Drill"
+],
+"sqlglot.dialects.doris:Doris.Tokenizer": [
+"sqlglot.dialects.doris:Doris"
+],
+"sqlglot.parsers.doris:DorisParser": [
+"sqlglot.dialects.doris:Doris"
+],
+"sqlglot.generators.doris:DorisGenerator": [
+"sqlglot.dialects.doris:Doris"
+],
+"sqlglot.dialects.snowflake:Snowflake.Tokenizer": [
+"sqlglot.dialects.snowflake:Snowflake"
+],
+"sqlglot.parsers.snowflake:SnowflakeParser": [
+"sqlglot.dialects.snowflake:Snowflake"
+],
+"sqlglot.generators.snowflake:SnowflakeGenerator": [
+"sqlglot.dialects.snowflake:Snowflake"
+],
+"sqlglot.dialects.snowflake:Snowflake.JSONPathTokenizer": [
+"sqlglot.dialects.snowflake:Snowflake"
+],
+"sqlglot.dialects.dremio:Dremio.Tokenizer": [
+"sqlglot.dialects.dremio:Dremio"
+],
+"sqlglot.parsers.dremio:DremioParser": [
+"sqlglot.dialects.dremio:Dremio"
+],
+"sqlglot.generators.dremio:DremioGenerator": [
+"sqlglot.dialects.dremio:Dremio"
+]
+}
